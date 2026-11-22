@@ -1,36 +1,71 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ▲ English Studio — AI-Driven English Learning Ecosystem
 
-## Getting Started
+**English Studio** is a full-stack web ecosystem built for structured, interactive English language learning across **CEFR levels A1–C2**. Powered by **Google Gemini AI**, the **Web Speech API**, and **Next.js 16**, the platform delivers a personalized study, practice, and assessment environment for every learner.
 
-First, run the development server:
+🌐 **Live Demo:** [english-use.vercel.app](https://english-use.vercel.app)
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+---
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## ✨ Core Learning Modules
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. **Tests Studio (`5–100 Qs`)**
+   - AI-powered generation of 5 to 100 grammar and vocabulary questions tailored to any topic and CEFR level.
+   - Real-time room management (Founder moderation: `Open/Close`, `Kick`, `Block/Unblock`), AI hints, detailed answer explanations, and custom-styled **PDF worksheet** exports.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+2. **Reading Studio (`Academic & IELTS`)**
+   - Generation of Cambridge and IELTS-style academic reading passages.
+   - Multiple-choice and open-ended comprehension questions with automated AI grading and downloadable PDF study sheets.
 
-## Learn More
+3. **Speaking Studio (`Microphone AI`)**
+   - Live browser voice recording via the Web Speech API.
+   - AI-driven evaluation of pronunciation, fluency, grammar accuracy, lexical resource, and estimated CEFR proficiency.
 
-To learn more about Next.js, take a look at the following resources:
+4. **Listening Studio**
+   - Level-adapted listening comprehension exercises with audio playback, targeted questions, and instant feedback.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+5. **Vocabulary Builder**
+   - Curated CEFR A1–C2 word bank with search, filtering, and AI-assisted vocabulary set generation.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+6. **AI Interactive Games**
+   - **Sentence Scramble:** Reconstruct sentences from shuffled word cards with audio pronunciation on click.
+   - **Card & Phrasal Match:** Pair phrasal verbs and idioms with their definitions.
+   - **Combo Streak** scoring system with post-game AI pedagogical performance analysis.
 
-## Deploy on Vercel
+7. **Global AI Diagnostics & 14-Day Roadmap**
+   - Unified CEFR proficiency assessment aggregating performance across Tests, Reading, Speaking, and Games, complete with a personalized 14-day study roadmap.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+---
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## 🛠️ Tech Stack
+
+| Layer | Technologies |
+| :--- | :--- |
+| **Framework** | Next.js 16.4 (App Router, Turbopack, Cache Components) |
+| **Language & UI** | TypeScript, React, Tailwind CSS (Vercel Minimalist Dark/Light UI) |
+| **Database & ORM** | Neon PostgreSQL, Prisma ORM 6 |
+| **AI & Speech** | Google Gemini API, Browser Web Speech API |
+| **Auth & Security** | Custom JWT / Cookie Authentication, Role-based Room Moderation |
+| **Deployment** | Vercel Production |
+
+---
+
+## 📁 Project Structure
+
+```text
+english-app/
+├── app/
+│   ├── api/                # REST API routes (tests, reading, speaking, listening, vocabulary, games, analytics, auth)
+│   ├── auth/               # Sign-in and registration pages
+│   ├── games/              # Interactive AI games module
+│   ├── listening/          # Listening comprehension module
+│   ├── profile/            # User profile and account settings
+│   ├── reading/            # Reading Studio and passage sessions
+│   ├── speaking/           # Speaking Studio and voice analysis
+│   ├── tests/              # Tests Studio and live test rooms
+│   ├── vocabulary/         # Vocabulary builder module
+│   ├── icon.tsx            # Dynamic Favicon generator
+│   ├── opengraph-image.tsx # Dynamic Open Graph preview image
+│   └── page.tsx            # Landing page & Global AI Diagnostics
+├── components/             # Reusable UI components (ThemeProvider, NotificationProvider, etc.)
+├── lib/                    # Prisma client, AI helpers, and shared utilities
+└── prisma/                 # Database schema (schema.prisma)
