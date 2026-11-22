@@ -7,6 +7,21 @@ import {
 export { GAME_TYPES };
 export type { GameCatalogItem, GameRoundQuestion };
 
+const UNIQUE_STARTERS = [
+  "morning standup",
+  "API timeout bug",
+  "database migration",
+  "code review feedback",
+  "sprint deadline",
+  "cache invalidation",
+  "unit test coverage",
+  "production deploy",
+  "user onboarding",
+  "search query speed",
+  "error boundary",
+  "team retrospective",
+];
+
 function buildFallbackRounds(params: {
   gameType: string;
   topic: string;
@@ -17,91 +32,45 @@ function buildFallbackRounds(params: {
   const { gameType, topic, level, questionCount, customPrompt } = params;
   const focus = customPrompt?.trim() ? ` (${customPrompt.trim()})` : "";
 
-  const samples: Record<
-    string,
-    Array<{
-      prompt: string;
-      targetSentence?: string;
-      chunks?: string[];
-      options: string[];
-      correctIndex: number;
-      explanation: string;
-    }>
-  > = {
-    "sentence-scramble": [
-      {
-        prompt: `Assemble a natural ${level} sentence about ${topic}${focus}:`,
-        targetSentence: "Developers test new features before release.",
-        chunks: ["new features", "Developers", "before release.", "test"],
-        options: [
-          "Developers test new features before release.",
-          "Features test developers before release new.",
-          "Before release test new features developers.",
-          "Developers before test new features release.",
-        ],
-        correctIndex: 0,
-        explanation:
-          "Subject + Verb + Object + Time/Condition clause order is standard in English.",
-      },
-      {
-        prompt: `Build a clear ${level} sentence (${topic}):`,
-        targetSentence: "Practice every day builds strong fluency.",
-        chunks: ["builds strong", "Practice", "fluency.", "every day"],
-        options: [
-          "Practice every day builds strong fluency.",
-          "Every day builds fluency practice strong.",
-          "Strong fluency builds practice every day.",
-          "Builds practice strong fluency every day.",
-        ],
-        correctIndex: 0,
-        explanation:
-          "'Practice every day' acts as the subject phrase followed by verb 'builds'.",
-      },
-    ],
-    "phrasal-match": [
-      {
-        prompt: `Match the phrasal verb 'figure out' (${level} · ${topic}${focus}):`,
-        options: [
-          "To find a solution or understand something",
-          "To draw a geometric figure on paper",
-          "To cancel a meeting suddenly",
-          "To speak louder in a crowd",
-        ],
-        correctIndex: 0,
-        explanation:
-          "'Figure out' means to solve or comprehend after thinking.",
-      },
-    ],
-  };
+  return Array.from({ length: questionCount }, (_, i) => {
+    const scenario = UNIQUE_STARTERS[i % UNIQUE_STARTERS.length];
+    const roundNum = i + 1;
 
-  const bank = samples[gameType] || [
-    {
-      prompt: `${gameType} (${level} · ${topic}${focus}): Select the card that best fits this challenge.`,
+    if (gameType === "sentence-scramble") {
+      const sentence = `Our team handles ${scenario} carefully in ${topic}.`;
+      const parts = [
+        "Our team",
+        `handles ${scenario}`,
+        "carefully",
+        `in ${topic}.`,
+      ];
+      return {
+        id: roundNum,
+        prompt: `Round ${roundNum} · Drag & drop word tiles to form a ${level} sentence about "${scenario}"${focus}:`,
+        targetSentence: sentence,
+        chunks: [parts[2], parts[3], parts[0], parts[1]],
+        options: [
+          sentence,
+          `Carefully ${scenario} our team in ${topic} handles.`,
+          `In ${topic} handles our team ${scenario} carefully.`,
+          `Our team in ${topic} carefully ${scenario} handles.`,
+        ],
+        correctIndex: 0,
+        explanation: `Standard English word order places subject ("Our team") + verb ("handles") + object ("${scenario}") + adverb/prepositional phrase.`,
+      };
+    }
+
+    return {
+      id: roundNum,
+      prompt: `Round ${roundNum} · ${gameType} (${level} · ${topic}${focus}) — Scenario: ${scenario}`,
       options: [
-        "Sharp & context-accurate match",
-        "Opposite meaning card",
-        "Unrelated vocabulary card",
-        "Grammatically broken form",
+        `Best ${level} fit for "${scenario}" in ${topic}`,
+        `Opposite or mismatched option for "${scenario}"`,
+        `Unrelated phrase outside ${topic}`,
+        `Grammatically incorrect form for "${scenario}"`,
       ],
       correctIndex: 0,
-      explanation:
-        "The first card matches the context and target grammar/meaning.",
-    },
-  ];
-
-  return Array.from({ length: questionCount }, (_, i) => {
-    const base = bank[i % bank.length];
-    return {
-      id: i + 1,
-      prompt:
-        questionCount > bank.length
-          ? `${base.prompt} [Card #${i + 1}]`
-          : base.prompt,
-      targetSentence: base.targetSentence,
-      chunks: base.chunks ? [...base.chunks] : undefined,
-      options: [...base.options],
-      correctIndex: base.correctIndex,
-      explanation: base.explanation,
+      explanation: `Option A fits "${scenario}" accurately for ${level} level and ${topic}.`,
     };
   });
 }
@@ -194,32 +163,31 @@ export async function generateGameWithAi(params: {
     return {
       rounds: buildFallbackRounds(params),
       usedAi: false,
-      aiNote: ".env faylida GEMINI_API_KEY topilmadi.",
+      aiNote: "GEMINI_API_KEY topilmadi.",
     };
   }
 
   const gameMeta =
     GAME_TYPES.find((g) => g.id === params.gameType) || GAME_TYPES[0];
 
-  const prompt = `Create ${params.questionCount} distinct interactive English game cards/rounds for "${gameMeta.name}" (${gameMeta.description}).
+  const prompt = `Generate EXACTLY ${params.questionCount} unique, non-repeating English learning game rounds for "${gameMeta.name}" (${gameMeta.description}).
 Topic: ${params.topic}
 CEFR Level: ${params.level}
-${params.customPrompt?.trim() ? `Extra instruction: ${params.customPrompt.trim()}` : ""}
+${params.customPrompt?.trim() ? `Custom focus: ${params.customPrompt.trim()}` : ""}
 
-Return ONLY valid JSON array (no markdown fences):
+IMPORTANT:
+- Every single one of the ${params.questionCount} items must be distinct and have a different sentence/word/phrase/context. Do NOT repeat the same item.
+- Return ONLY a raw JSON array of ${params.questionCount} objects (no markdown):
 [
   {
-    "prompt": "Clear challenge or clue for the player",
-    "targetSentence": "Complete natural English sentence if sentence-scramble, else omit or empty",
-    "chunks": ["part1", "part2", "part3", "part4"],
-    "options": ["Choice A", "Choice B", "Choice C", "Choice D"],
+    "prompt": "Unique challenge or sentence clue",
+    "targetSentence": "Full correct sentence if sentence-scramble, otherwise omit",
+    "chunks": ["tile1", "tile2", "tile3", "tile4"],
+    "options": ["Option A", "Option B", "Option C", "Option D"],
     "correctIndex": 0,
-    "explanation": "Short clear explanation"
+    "explanation": "Concise explanation"
   }
-]
-Rules:
-- Every round must have 4 distinct options and integer correctIndex (0..3).
-- For sentence-scramble, put scrambled word/phrase pieces in "chunks" and the right sentence in "options[correctIndex]".`;
+]`;
 
   const models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
   let lastErr = "";
@@ -240,7 +208,7 @@ Rules:
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
             generationConfig: {
-              temperature: 0.75,
+              temperature: 0.85,
               responseMimeType: "application/json",
             },
           }),

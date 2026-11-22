@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useState  } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 
@@ -48,7 +48,7 @@ interface TestDetail {
   participants: ParticipantItem[];
 }
 
-export default function TestByIdPage() {
+function TestDetailContent() {
   const params = useParams<{ id: string }>();
   const testId = params?.id ?? "";
 
@@ -695,5 +695,19 @@ export default function TestByIdPage() {
         )}
       </div>
     </main>
+  );
+}
+
+export default function TestByIdPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-neutral-950 text-neutral-100 p-8">
+          <p className="text-sm opacity-75">Test yuklanmoqda...</p>
+        </main>
+      }
+    >
+      <TestDetailContent />
+    </Suspense>
   );
 }

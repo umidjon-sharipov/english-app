@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { GAME_TYPES, GameRoundQuestion } from "@/lib/games-catalog";
@@ -50,7 +50,7 @@ function normalizeSentence(str: string): string {
     .trim();
 }
 
-export default function Play2DGameArenaPage() {
+function GameArenaContent() {
   const params = useParams<{ id: string }>();
   const gameId = params?.id ?? "";
 
@@ -63,11 +63,8 @@ export default function Play2DGameArenaPage() {
   const [checkMode, setCheckMode] = useState<CheckMode>("step");
   const [activeIdx, setActiveIdx] = useState(0);
 
-  // Selected option index per round (for card / arcade / match games)
   const [answers, setAnswers] = useState<Record<number, number>>({});
-  // Ordered word/chunk indices placed in the drop zone for sentence-scramble
   const [slotChunks, setSlotChunks] = useState<Record<number, number[]>>({});
-  // Drag source tracking
   const [dragPayload, setDragPayload] = useState<{
     from: "pool" | "slot";
     chunkIdx: number;
@@ -75,22 +72,19 @@ export default function Play2DGameArenaPage() {
   } | null>(null);
   const [isDragOverDropzone, setIsDragOverDropzone] = useState(false);
 
-  // Checked rounds (in 'step' mode) or all submitted (in 'end' mode)
   const [checkedRounds, setCheckedRounds] = useState<Record<number, boolean>>({});
   const [roundCorrectMap, setRoundCorrectMap] = useState<Record<number, boolean>>({});
   const [allSubmitted, setAllSubmitted] = useState(false);
+  const [finished, setFinished] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Optional 2D clue & Participant AI helper
   const [showClue, setShowClue] = useState<Record<number, boolean>>({});
   const [doubts, setDoubts] = useState<Record<number, string>>({});
   const [hints, setHints] = useState<Record<number, string>>({});
   const [loadingHintIdx, setLoadingHintIdx] = useState<number | null>(null);
 
-  // Founder moderation
   const [moderatingId, setModeratingId] = useState<string | null>(null);
 
-  // .PDF modal
   const [pdfModalOpen, setPdfModalOpen] = useState(false);
   const [pdfBg, setPdfBg] = useState<"stars" | "books" | "grid" | "waves" | "none">("stars");
   const [blankLines, setBlankLines] = useState<number>(2);
@@ -147,7 +141,6 @@ export default function Play2DGameArenaPage() {
     const target = buildExpectedSentence(currentRound);
     const words = target.split(/\s+/).filter(Boolean);
     if (words.length >= 3) {
-      // Deterministic non-trivial order for drag & drop
       return words.map((_, i) => words[(i * 2 + 1) % words.length]);
     }
     return currentRound.options || [];
@@ -160,31 +153,99 @@ export default function Play2DGameArenaPage() {
     .join(" ");
 
   function evaluateRound(rIdx: number, roundItem: GameRoundQuestion): boolean {
-    if (roundItem.id && game?.gameType === "sentence-scramble") {
+    if (game?.gameType === "sentence-scramble") {
       const order = slotChunks[rIdx] || [];
-      const built = order
-        .map((cIdx) => {
-          const chList =
-            Array.isArray(roundItem.chunks) && roundItem.chunks.length >= 2
-              ? roundItem.chunks
-              : buildExpectedSentence(roundItem).split(/\s+/).filter(Boolean);
-          return chList[cIdx] ?? "";
-        })
-        .filter(Boolean)
-        .join(" ");
-      const expected = buildExpectedSentence(roundItem);
-      if (built.trim() && expected.trim()) {
-        return normalizeSentence(built) === normalizeSentence(expected);
+      if (order.length > 0) {
+        const chList =
+          Array.isArray(roundItem.chunks) && roundItem.chunks.length >= 2
+            ? roundItem.chunks
+            : buildExpectedSentence(roundItem).split(/\s+/).filter(Boolean);
+        const built = order
+          .map((cIdx) => chList[cIdx] ?? "")
+          .filter(Boolean)
+          .join(" ");
+        const expected = buildExpectedSentence(roundItem);
+        if (built.trim() && expected.trim()) {
+          return normalizeSentence(built) === normalizeSentence(expected);
+        }
       }
     }
     return answers[rIdx] === roundItem.correctIndex;
   }
 
-  function handleCheckCurrentRound() {
+  function computeTotals(
+    checkedMap: Record<number, boolean>,
+    correctMap: Record<number, boolean>,
+    forceAll: boolean
+  ) {
+    let sc = 0;
+    let curS = 0;
+    let maxS = 0;
+    rounds.forEach((r, idx) => {
+      const isEv = forceAll || Boolean(checkedMap[idx]);
+      const ok =
+        typeof correctMap[idx] === "boolean" && checkedMap[idx]
+          ? correctMap[idx]
+          : evaluateRound(idx, r);
+      if (isEv && ok) {
+        sc += 1;
+        curS += 1;
+        if (curS > maxS) maxS = curS;
+      } else if (isEv) {
+        curS = 0;
+      }
+    });
+    return { score: sc, streak: maxS };
+  }
+
+  const { score, streak: bestStreak } = computeTotals(
+    checkedRounds,
+    roundCorrectMap,
+    allSubmitted
+  );
+
+  // Persist result event to backend
+  async function persistEventResult(
+    nextScore: number,
+    nextStreak: number,
+    eventLabel: string,
+    refreshParticipants = false
+  ) {
+    if (!game) return;
+    setSaving(true);
+    try {
+      await fetch(`/api/games/${encodeURIComponent(game.id)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          score: nextScore,
+          total: rounds.length,
+          streak: nextStreak,
+        }),
+      });
+      setMsg(`${eventLabel}: ${nextScore}/${rounds.length} · Streak ${nextStreak}`);
+      if (refreshParticipants) {
+        await loadGame();
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleCheckCurrentRound() {
     if (!currentRound) return;
     const ok = evaluateRound(activeIdx, currentRound);
-    setCheckedRounds((prev) => ({ ...prev, [activeIdx]: true }));
-    setRoundCorrectMap((prev) => ({ ...prev, [activeIdx]: ok }));
+    const nextChecked = { ...checkedRounds, [activeIdx]: true };
+    const nextCorrect = { ...roundCorrectMap, [activeIdx]: ok };
+    setCheckedRounds(nextChecked);
+    setRoundCorrectMap(nextCorrect);
+
+    const totals = computeTotals(nextChecked, nextCorrect, allSubmitted);
+    await persistEventResult(
+      totals.score,
+      totals.streak,
+      `Round #${activeIdx + 1} tekshirildi (${ok ? "To'g'ri" : "Noto'g'ri"})`
+    );
   }
 
   function handleNextRound() {
@@ -201,7 +262,6 @@ export default function Play2DGameArenaPage() {
     }
   }
 
-  // Drag & Drop handlers for Sentence Scramble
   function handleDropToSlot(insertAt?: number) {
     if (!dragPayload || !currentRound) return;
     const { from, chunkIdx, slotPos } = dragPayload;
@@ -255,88 +315,39 @@ export default function Play2DGameArenaPage() {
     setCheckedRounds((prev) => ({ ...prev, [activeIdx]: false }));
   }
 
-  // Score & streak calculation
-  let score = 0;
-  let runningStreak = 0;
-  let bestStreak = 0;
-
-  rounds.forEach((r, idx) => {
-    const isEvaluated = allSubmitted || checkedRounds[idx];
-    const ok =
-      typeof roundCorrectMap[idx] === "boolean" && checkedRounds[idx]
-        ? roundCorrectMap[idx]
-        : evaluateRound(idx, r);
-
-    if (isEvaluated && ok) {
-      score += 1;
-      runningStreak += 1;
-      if (runningStreak > bestStreak) bestStreak = runningStreak;
-    } else if (isEvaluated) {
-      runningStreak = 0;
-    }
-  });
-
   async function handleCheckAllAtEnd() {
     if (!game) return;
-    setSaving(true);
     const nextChecked: Record<number, boolean> = {};
     const nextCorrect: Record<number, boolean> = {};
-    let totalCorrect = 0;
-    let curS = 0;
-    let maxS = 0;
 
     rounds.forEach((r, idx) => {
-      const ok = evaluateRound(idx, r);
       nextChecked[idx] = true;
-      nextCorrect[idx] = ok;
-      if (ok) {
-        totalCorrect += 1;
-        curS += 1;
-        if (curS > maxS) maxS = curS;
-      } else {
-        curS = 0;
-      }
+      nextCorrect[idx] = evaluateRound(idx, r);
     });
 
     setCheckedRounds(nextChecked);
     setRoundCorrectMap(nextCorrect);
     setAllSubmitted(true);
 
-    try {
-      await fetch(`/api/games/${encodeURIComponent(game.id)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          score: totalCorrect,
-          total: rounds.length,
-          streak: maxS,
-        }),
-      });
-      setMsg(`Yakuniy tekshiruv: ${totalCorrect}/${rounds.length} · Best Streak: ${maxS}`);
-      await loadGame();
-    } finally {
-      setSaving(false);
-    }
+    const totals = computeTotals(nextChecked, nextCorrect, true);
+    await persistEventResult(
+      totals.score,
+      totals.streak,
+      "Barcha raundlar tekshirildi",
+      true
+    );
   }
 
-  async function handleSaveProgress() {
+  async function handleFinishGame() {
     if (!game) return;
-    setSaving(true);
-    try {
-      await fetch(`/api/games/${encodeURIComponent(game.id)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          score,
-          total: rounds.length,
-          streak: bestStreak,
-        }),
-      });
-      setMsg(`Natija saqlandi: ${score}/${rounds.length} · Streak: ${bestStreak}`);
-      await loadGame();
-    } finally {
-      setSaving(false);
-    }
+    setFinished(true);
+    const totals = computeTotals(checkedRounds, roundCorrectMap, true);
+    await persistEventResult(
+      totals.score,
+      totals.streak,
+      "O'yin yakunlandi va saqlandi",
+      true
+    );
   }
 
   async function handleToggleAi() {
@@ -441,14 +452,12 @@ export default function Play2DGameArenaPage() {
   return (
     <main className="min-h-screen bg-[radial-gradient(ellipse_at_top,#1e1b4b_0%,#09090b_55%,#040406_100%)] text-neutral-100 p-5 md:p-8">
       <div className="max-w-5xl mx-auto space-y-6">
-        {/* Top Navigation & Controls */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <Link className="text-xs underline opacity-80 hover:opacity-100" href="/games">
             ← O&apos;yinlar studiyasi
           </Link>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Check mode selector: Tekshirish -> Next vs Oxirida tekshirtirish */}
             <div className="inline-flex rounded-xl border border-indigo-500/30 bg-neutral-900/90 p-1 text-xs">
               <button
                 type="button"
@@ -502,7 +511,6 @@ export default function Play2DGameArenaPage() {
           </div>
         </div>
 
-        {/* .PDF Modal */}
         {pdfModalOpen && game && (
           <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
             <div className="w-full max-w-md rounded-2xl border border-indigo-400/30 bg-neutral-900 p-5 space-y-4 shadow-2xl">
@@ -599,7 +607,6 @@ export default function Play2DGameArenaPage() {
           </div>
         ) : (
           <div className="space-y-6">
-            {/* Founder Moderation Panel */}
             {isFounder && (
               <div className="rounded-2xl border border-indigo-500/30 bg-neutral-900/80 p-4 space-y-3">
                 <div className="flex items-center justify-between text-xs">
@@ -676,7 +683,6 @@ export default function Play2DGameArenaPage() {
               </div>
             )}
 
-            {/* Skewed / Angled 2D Game Banner */}
             <div className="relative overflow-hidden rounded-3xl border border-indigo-400/30 bg-gradient-to-r from-indigo-950/80 via-neutral-900 to-fuchsia-950/60 p-6 flex flex-wrap items-center justify-between gap-4 shadow-xl">
               <div className="space-y-1">
                 <div className="inline-flex items-center gap-2">
@@ -701,7 +707,22 @@ export default function Play2DGameArenaPage() {
               </div>
             </div>
 
-            {/* Round Tabs (Compact Step Strip) */}
+            {finished && (
+              <div className="rounded-2xl border border-emerald-400/50 bg-emerald-950/40 p-5 flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-bold text-emerald-200">
+                    O&apos;yin Yakunlandi!
+                  </p>
+                  <p className="text-xs opacity-85 mt-0.5">
+                    Yakuniy natija: {score}/{rounds.length} · Best Streak: {bestStreak}
+                  </p>
+                </div>
+                <Link className="px-4 py-2 rounded-xl text-xs font-semibold bg-white text-neutral-950" href="/games">
+                  O&apos;yinlar ro&apos;yxatiga qaytish
+                </Link>
+              </div>
+            )}
+
             <div className="flex items-center gap-2 overflow-x-auto pb-1">
               {rounds.map((r, idx) => {
                 const isDone =
@@ -735,7 +756,6 @@ export default function Play2DGameArenaPage() {
               })}
             </div>
 
-            {/* SINGLE ACTIVE 2D ROUND STAGE */}
             {currentRound && (
               <section className="rounded-3xl border border-indigo-400/30 bg-neutral-900/80 p-6 space-y-5 shadow-2xl">
                 <div className="flex items-center justify-between gap-2 text-xs">
@@ -758,7 +778,6 @@ export default function Play2DGameArenaPage() {
                   {currentRound.prompt}
                 </h2>
 
-                {/* MECHANIC A: Drag-and-Drop Word / Tile Builder for Sentence Scramble */}
                 {isScramble ? (
                   <div className="space-y-4">
                     <div
@@ -810,7 +829,6 @@ export default function Play2DGameArenaPage() {
                       )}
                     </div>
 
-                    {/* Draggable Source Word Cards */}
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-xs opacity-75">
                         <span>So&apos;z kartochkalari (chapga/o&apos;ngga sudrang yoki bosing):</span>
@@ -857,17 +875,15 @@ export default function Play2DGameArenaPage() {
                     )}
                   </div>
                 ) : (
-                  /* MECHANIC B: Angled / Skewed 2D Cards for Match, Duel, Blitz, Cloze, etc. */
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                     {(currentRound.options || []).map((opt, oIdx) => {
                       const picked = answers[activeIdx] === oIdx;
                       const isRight = currentRound.correctIndex === oIdx;
-                      const cardSkew =
-                        isPairCardGame
-                          ? oIdx % 2 === 0
-                            ? "-skew-x-2"
-                            : "skew-x-2"
-                          : "";
+                      const cardSkew = isPairCardGame
+                        ? oIdx % 2 === 0
+                          ? "-skew-x-2"
+                          : "skew-x-2"
+                        : "";
 
                       let stateStyle =
                         "border-neutral-700/80 bg-neutral-950/80 hover:-translate-y-0.5 hover:border-indigo-400";
@@ -919,7 +935,6 @@ export default function Play2DGameArenaPage() {
                   </div>
                 )}
 
-                {/* Result feedback for current round when checked */}
                 {currentChecked && (
                   <div
                     className={`rounded-2xl border p-4 text-xs space-y-1 ${
@@ -937,7 +952,6 @@ export default function Play2DGameArenaPage() {
                   </div>
                 )}
 
-                {/* Participant AI Helper (only when allowParticipantAi === true) */}
                 {aiEnabled && (
                   <div className="pt-3 border-t border-neutral-800 space-y-2">
                     <div className="flex flex-col sm:flex-row gap-2">
@@ -972,7 +986,6 @@ export default function Play2DGameArenaPage() {
                   </div>
                 )}
 
-                {/* Bottom Action Bar: Tekshirish -> Next OR Oxirida tekshirtir */}
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-neutral-800/80">
                   <div className="flex items-center gap-2">
                     <button
@@ -988,8 +1001,9 @@ export default function Play2DGameArenaPage() {
                       <>
                         <button
                           type="button"
+                          disabled={saving}
                           onClick={handleCheckCurrentRound}
-                          className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-500 text-white hover:bg-indigo-400 cursor-pointer"
+                          className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-500 text-white hover:bg-indigo-400 cursor-pointer disabled:opacity-50"
                         >
                           Tekshirish
                         </button>
@@ -1014,25 +1028,27 @@ export default function Play2DGameArenaPage() {
                     )}
                   </div>
 
-                  {checkMode === "end" ? (
+                  <div className="flex items-center gap-2">
+                    {checkMode === "end" && (
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={handleCheckAllAtEnd}
+                        className="px-5 py-2.5 rounded-xl text-xs font-bold bg-amber-400 text-neutral-950 hover:bg-amber-300 cursor-pointer disabled:opacity-50"
+                      >
+                        {saving ? "Tekshirilmoqda..." : "Hammasini Tekshirtirish"}
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       disabled={saving}
-                      onClick={handleCheckAllAtEnd}
-                      className="px-6 py-2.5 rounded-xl text-xs md:text-sm font-bold bg-amber-400 text-neutral-950 hover:bg-amber-300 cursor-pointer disabled:opacity-50"
+                      onClick={handleFinishGame}
+                      className="px-5 py-2.5 rounded-xl text-xs md:text-sm font-bold bg-emerald-400 text-neutral-950 hover:bg-emerald-300 cursor-pointer disabled:opacity-50"
                     >
-                      {saving ? "Tekshirilmoqda..." : "Hammasini Tekshirtirish"}
+                      {saving ? "Saqlanmoqda..." : "O'yinni Yakunlash"}
                     </button>
-                  ) : (
-                    <button
-                      type="button"
-                      disabled={saving}
-                      onClick={handleSaveProgress}
-                      className="px-5 py-2.5 rounded-xl text-xs font-semibold bg-emerald-400 text-neutral-950 hover:bg-emerald-300 cursor-pointer disabled:opacity-50"
-                    >
-                      {saving ? "Saqlanmoqda..." : "Natijani Saqlash"}
-                    </button>
-                  )}
+                  </div>
                 </div>
               </section>
             )}
@@ -1040,5 +1056,19 @@ export default function Play2DGameArenaPage() {
         )}
       </div>
     </main>
+  );
+}
+
+export default function Play2DGameArenaPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-neutral-950 text-neutral-100 p-8">
+          <p className="text-sm opacity-75">2D o&apos;yin sahnasi yuklanmoqda...</p>
+        </main>
+      }
+    >
+      <GameArenaContent/>
+    </Suspense>
   );
 }

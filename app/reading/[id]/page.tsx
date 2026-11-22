@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { GradedQuestionResult, ReadingPassageItem } from "@/lib/reading-ai";
@@ -30,7 +30,7 @@ interface ReadingDetail {
   participants: ParticipantRow[];
 }
 
-export default function ReadingDetailPage() {
+function ReadingDetailContent() {
   const params = useParams<{ id: string }>();
   const readingId = params?.id ?? "";
 
@@ -586,5 +586,19 @@ export default function ReadingDetailPage() {
         )}
       </div>
     </main>
+  );
+}
+
+export default function ReadingDetailPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen bg-neutral-950 text-neutral-100 p-8">
+          <p className="text-sm opacity-75">Reading yuklanmoqda...</p>
+        </main>
+      }
+    >
+      <ReadingDetailContent />
+    </Suspense>
   );
 }
