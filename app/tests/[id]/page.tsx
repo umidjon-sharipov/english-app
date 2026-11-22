@@ -40,7 +40,7 @@ interface TestDetail {
   startsAt: string | null;
   endsAt: string | null;
   designTheme: string | null;
-  allowParticipantAi?: boolean;
+  allowParticipantAi: boolean;
   blockedUserIds?: string[];
   questionsJson: QuestionItem[];
   creatorId: string;
@@ -53,6 +53,7 @@ export default function TestByIdPage() {
   const testId = params?.id ?? "";
 
   const [test, setTest] = useState<TestDetail | null>(null);
+  const [isFounder, setIsFounder] = useState<boolean>(false);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
@@ -63,13 +64,12 @@ export default function TestByIdPage() {
   );
   const [submitting, setSubmitting] = useState(false);
 
-  // Participant AI tutor (default OFF)
-  const [participantAiEnabled, setParticipantAiEnabled] = useState<boolean>(false);
+  // Per-question AI doubt & explanation (only visible when test.allowParticipantAi === true)
   const [doubtInputs, setDoubtInputs] = useState<Record<number, string>>({});
   const [aiHints, setAiHints] = useState<Record<number, string>>({});
   const [hintLoadingIdx, setHintLoadingIdx] = useState<number | null>(null);
 
-  // Founder participants & moderation drawer/panel
+  // Founder panel state
   const [showParticipantsPanel, setShowParticipantsPanel] = useState<boolean>(true);
   const [moderatingId, setModeratingId] = useState<string | null>(null);
 
@@ -92,11 +92,12 @@ export default function TestByIdPage() {
       });
       const data = await res.json();
 
+      if (typeof data.isFounder === "boolean") {
+        setIsFounder(data.isFounder);
+      }
+
       if (data.test) {
         setTest(data.test);
-        if (typeof data.test.allowParticipantAi === "boolean") {
-          setParticipantAiEnabled(data.test.allowParticipantAi);
-        }
         if (data.test.designTheme === "card" || data.test.designTheme === "paper") {
           setCardDesign(data.test.designTheme);
         }
@@ -105,7 +106,7 @@ export default function TestByIdPage() {
       if (!res.ok) {
         setErrorMsg(data.error || "Testni ochishda xatolik yuz berdi.");
       } else if (data.autoJoined) {
-        setInfoMsg("Siz avtomatik ravishda qatnashuvchilar ro'yxatiga qo'shildingiz.");
+        setInfoMsg("Siz testga qo'shildingiz.");
       }
     } catch {
       setErrorMsg("Tarmoq xatoligi yuz berdi.");
@@ -118,8 +119,31 @@ export default function TestByIdPage() {
     loadTest();
   }, [loadTest]);
 
+  async function handleToggleTestAi() {
+    if (!test || !isFounder) return;
+    setErrorMsg(null);
+    setInfoMsg(null);
+    const nextAi = !Boolean(test.allowParticipantAi);
+    try {
+      const res = await fetch(`/api/tests/${encodeURIComponent(test.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allowParticipantAi: nextAi }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setErrorMsg(data.error || "AI holatini o'zgartirib bo'lmadi.");
+        return;
+      }
+      if (data.test) setTest(data.test);
+      setInfoMsg(`Testda AI ${nextAi ? "ON" : "OFF"} qilindi.`);
+    } catch {
+      setErrorMsg("AI holatini yangilashda xato.");
+    }
+  }
+
   async function handleAskTutor(qIdx: number) {
-    if (!test || !participantAiEnabled) return;
+    if (!test || !test.allowParticipantAi) return;
     setHintLoadingIdx(qIdx);
     setErrorMsg(null);
 
@@ -130,7 +154,6 @@ export default function TestByIdPage() {
         body: JSON.stringify({
           questionIndex: qIdx,
           doubt: doubtInputs[qIdx] || "",
-          participantAiEnabled: true,
         }),
       });
       const data = await res.json();
@@ -151,7 +174,7 @@ export default function TestByIdPage() {
     targetUserId: string,
     participantId?: string
   ) {
-    if (!test) return;
+    if (!test || !isFounder) return;
     setModeratingId(participantId || targetUserId);
     setErrorMsg(null);
     setInfoMsg(null);
@@ -167,8 +190,8 @@ export default function TestByIdPage() {
         setErrorMsg(data.error || "Amalni bajarib bo'lmadi.");
         return;
       }
+      if (data.test) setTest(data.test);
       setInfoMsg(data.message || "Yangilandi.");
-      await loadTest();
     } catch {
       setErrorMsg("Amalda tarmoq xatoligi yuz berdi.");
     } finally {
@@ -256,6 +279,7 @@ export default function TestByIdPage() {
     : [];
 
   const isLight = pageTheme === "light";
+  const aiEnabledOnTest = Boolean(test?.allowParticipantAi);
 
   return (
     <main
@@ -264,32 +288,35 @@ export default function TestByIdPage() {
       }`}
     >
       <div className="max-w-4xl mx-auto space-y-6">
-        {/* Top bar */}
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <Link href="/tests" className="text-xs underline opacity-80 hover:opacity-100">
+          <Link className="text-xs underline opacity-80 hover:opacity-100" href="/tests">
             ← Barcha ochiq testlarga qaytish
           </Link>
 
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setParticipantAiEnabled((v) => !v)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer ${
-                participantAiEnabled
-                  ? "bg-emerald-500 text-neutral-950 border-emerald-400"
-                  : "border-neutral-700 opacity-85"
-              }`}
-            >
-              AI: {participantAiEnabled ? "ON" : "OFF"}
-            </button>
+            {isFounder && test && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleToggleTestAi}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer ${
+                    aiEnabledOnTest
+                      ? "bg-emerald-500 text-neutral-950 border-emerald-400"
+                      : "border-neutral-700 opacity-85"
+                  }`}
+                >
+                  Testda AI: {aiEnabledOnTest ? "ON" : "OFF"}
+                </button>
 
-            <button
-              type="button"
-              onClick={() => setShowParticipantsPanel((s) => !s)}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium border border-neutral-700 cursor-pointer"
-            >
-              Kirganlar ({participants.length}) / Datalar
-            </button>
+                <button
+                  type="button"
+                  onClick={() => setShowParticipantsPanel((s) => !s)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium border border-neutral-700 cursor-pointer"
+                >
+                  Kirganlar ({participants.length}) / Datalar
+                </button>
+              </>
+            )}
 
             <button
               type="button"
@@ -312,7 +339,7 @@ export default function TestByIdPage() {
           </div>
         </div>
 
-        {/* Modal when .PDF is clicked: choose background icon/effect, ______ lines, header */}
+        {/* Modal when .PDF clicked */}
         {pdfModalOpen && test && (
           <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
             <div
@@ -444,8 +471,8 @@ export default function TestByIdPage() {
           </div>
         ) : (
           <div className="space-y-6">
-            {/* Founder Participants & Moderation Panel */}
-            {showParticipantsPanel && (
+            {/* Founder-only participants, data, kick & block panel */}
+            {isFounder && showParticipantsPanel && (
               <div
                 className={`rounded-xl border p-4 space-y-3 ${
                   isLight
@@ -455,7 +482,7 @@ export default function TestByIdPage() {
               >
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold">
-                    Testga kirganlar &amp; Datalar ({participants.length} ta)
+                    Founder Panel · Kirganlar &amp; Datalar ({participants.length} ta)
                   </h2>
                   <span className="text-[11px] opacity-65">
                     Blocklanganlar: {blockedIds.length} ta
@@ -463,7 +490,7 @@ export default function TestByIdPage() {
                 </div>
 
                 {participants.length === 0 ? (
-                  <p className="text-xs opacity-70">Hozircha qatnashuvchi yo&apos;q.</p>
+                  <p className="text-xs opacity-70">Hozircha boshqa qatnashuvchi yo&apos;q.</p>
                 ) : (
                   <div className="divide-y divide-neutral-800/60 text-xs">
                     {participants.map((p) => {
@@ -519,7 +546,7 @@ export default function TestByIdPage() {
 
                 {blockedIds.length > 0 && (
                   <div className="pt-2 border-t border-neutral-800/60 flex flex-wrap items-center gap-2 text-xs">
-                    <span className="opacity-70">Blocklangan IDlar:</span>
+                    <span className="opacity-70">Blocklanganlar:</span>
                     {blockedIds.map((bId) => (
                       <span
                         key={bId}
@@ -540,7 +567,6 @@ export default function TestByIdPage() {
               </div>
             )}
 
-            {/* Test Header */}
             <div
               className={`rounded-xl border p-6 space-y-2 ${
                 cardDesign === "paper"
@@ -562,7 +588,7 @@ export default function TestByIdPage() {
               </div>
               <p className="text-xs opacity-75">
                 {test.topic} · {test.level} · {questions.length} savol · Founder: @
-                {test.creator?.userName} · AI: {participantAiEnabled ? "ON" : "OFF"}
+                {test.creator?.userName} · AI: {aiEnabledOnTest ? "ON" : "OFF"}
               </p>
 
               {result && (
@@ -572,7 +598,6 @@ export default function TestByIdPage() {
               )}
             </div>
 
-            {/* Questions */}
             <div className="space-y-4">
               {questions.map((q, qIdx) => (
                 <div
@@ -610,8 +635,8 @@ export default function TestByIdPage() {
                     })}
                   </div>
 
-                  {/* AI Tutor Box per question (only when AI is ON; never reveals answer) */}
-                  {participantAiEnabled && (
+                  {/* Shown ONLY when test.allowParticipantAi === true */}
+                  {aiEnabledOnTest && (
                     <div className="pt-2 border-t border-neutral-800/60 space-y-2">
                       <div className="flex flex-col sm:flex-row gap-2">
                         <input
@@ -636,7 +661,7 @@ export default function TestByIdPage() {
                           onClick={() => handleAskTutor(qIdx)}
                           className="px-3 py-1.5 rounded-md text-xs font-medium border border-emerald-500/50 text-emerald-300 hover:bg-emerald-950/30 cursor-pointer disabled:opacity-50"
                         >
-                          {hintLoadingIdx === qIdx ? "O'ylanmoqda..." : "AI Tushuntirish"}
+                          {hintLoadingIdx === qIdx ? "Tushuntirilmoqda..." : "AI Tushuntirish"}
                         </button>
                       </div>
                       {aiHints[qIdx] && (

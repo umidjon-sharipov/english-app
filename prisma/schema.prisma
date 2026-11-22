@@ -51,6 +51,8 @@ model Test {
 
     @@index([creatorId])
     @@index([status])
+  allowParticipantAi Boolean    @default(false)
+  blockedUserIds     String[]   @default([])
 }
 
 model TestParticipant {

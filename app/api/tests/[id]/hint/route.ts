@@ -23,26 +23,39 @@ function stripDirectAnswer(text: string, options: string[]): string {
       out = out.replace(new RegExp(escaped, "gi"), "[variant]");
     }
   }
-  return (
-    out.replace(/\s{2,}/g, " ").trim() ||
-    "Gapning zamon ishorasi, bog'lovchilari va gap bo'laklari bog'lanishiga e'tibor bering."
-  );
+  return out.replace(/\s{2,}/g, " ").trim();
 }
 
-function buildLocalTutorHint(
+function buildSmartTutorExplanation(
   q: StoredQuestion,
   userDoubt: string,
   level: string,
   topic: string
 ): string {
-  const doubtPart = userDoubt.trim()
-    ? ` Siz so'ragan joy ("${userDoubt.trim()}") bo'yicha:`
+  const qLower = (q.question || "").toLowerCase();
+  const doubtText = userDoubt.trim();
+
+  const clues: string[] = [];
+  if (qLower.includes("before") || qLower.includes("after") || qLower.includes("by the time")) {
+    clues.push("Gapda vaqt ketma-ketligi ('before', 'after', 'by the time') bor — voqealarning qaysi biri oldinroq sodir bo'lganini solishtiring.");
+  }
+  if (qLower.includes("not only") || qLower.includes("never") || qLower.includes("rarely") || qLower.includes("seldom")) {
+    clues.push("Inversiya (so'z tartibi o'zgarishi) qoidasiga e'tibor bering: gap boshida salbiy/cheklovchi ifoda kelsa, yordamchi fe'l egadan oldin keladi.");
+  }
+  if (qLower.includes("____") || qLower.includes("blank") || qLower.includes("completes")) {
+    clues.push("Bo'sh joyga qo'yiladigan so'zning zamoni, shaxs/son mosligi va gapdagi vazifasi (fe'l, bog'lovchi yoki frazaviy fe'l) mos kelishini tekshiring.");
+  }
+  if (clues.length === 0) {
+    clues.push(
+      `Mavzu (${topic}) va daraja (${level}) doirasida gapning grammatik skeletini (ega + kesim) aniqlang va har bir variant o'sha o'rinda qanday ma'no berishini tekshiring.`
+    );
+  }
+
+  const doubtNote = doubtText
+    ? `Siz yozgan savol ("${doubtText}") bo'yicha: `
     : "";
-  return (
-    `AI Yordamchi (${level} · ${topic}):${doubtPart} Gapdagi zamon/shart ko'rsatkichlarini, ` +
-    `so'z turkumini va kontekst mantiqini tekshiring. Tayyor javob aytilmaydi — ` +
-    `variantlarning gap tuzilishiga qanday tushishini solishtirib ko'ring.`
-  );
+
+  return `${doubtNote}${clues.join(" ")} (Eslatma: tayyor javob berilmaydi, o'zingiz xulosa chiqaring.)`;
 }
 
 export async function POST(
@@ -54,7 +67,6 @@ export async function POST(
     const body = (await req.json()) as {
       questionIndex?: unknown;
       doubt?: unknown;
-      participantAiEnabled?: unknown;
     };
 
     const test = await db.test.findUnique({ where: { id } });
@@ -62,11 +74,9 @@ export async function POST(
       return NextResponse.json({ error: "Test topilmadi." }, { status: 404 });
     }
 
-    const enabled =
-      body.participantAiEnabled === true || Boolean(test.allowParticipantAi);
-    if (!enabled) {
+    if (!test.allowParticipantAi) {
       return NextResponse.json(
-        { error: "Bu testda qatnashuvchilar uchun AI OFF holatda." },
+        { error: "Bu testda AI yordamchi yoqilmagan (OFF)." },
         { status: 403 }
       );
     }
@@ -89,22 +99,21 @@ export async function POST(
 
     const doubt = typeof body.doubt === "string" ? body.doubt.trim() : "";
     const options = Array.isArray(q.options) ? q.options : [];
-    const apiKey = process.env.GEMINI_API_KEY;
+    const fallbackExplanation = buildSmartTutorExplanation(
+      q,
+      doubt,
+      test.level || "B1",
+      test.topic || "English"
+    );
 
+    const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      return NextResponse.json({
-        hint: buildLocalTutorHint(
-          q,
-          doubt,
-          test.level || "B1",
-          test.topic || "English"
-        ),
-      });
+      return NextResponse.json({ hint: fallbackExplanation });
     }
 
-    const prompt = `You are an English study tutor helping a student understand a test question.
-STRICT RULE: NEVER reveal the correct option letter (A/B/C/D) or exact answer text. Do NOT give the final answer.
-Explain the grammar rule, clue, or concept in 2-3 clear sentences so the student can solve it themselves.
+    const prompt = `You are an English tutor helping a student understand a confusing question.
+STRICT RULE: NEVER state the correct option letter (A/B/C/D) or exact answer choice. Do NOT give the final answer.
+Explain the grammar rule, sentence clue, or concept clearly in 2-3 sentences so the student can solve it themselves.
 
 Level: ${test.level || "B1"}
 Topic: ${test.topic || "English"}
@@ -115,7 +124,7 @@ Student's question: ${doubt || "I don't understand this question."}
 
     try {
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
+        `[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$){encodeURIComponent(
           apiKey
         )}`,
         {
@@ -129,14 +138,7 @@ Student's question: ${doubt || "I don't understand this question."}
       );
 
       if (!res.ok) {
-        return NextResponse.json({
-          hint: buildLocalTutorHint(
-            q,
-            doubt,
-            test.level || "B1",
-            test.topic || "English"
-          ),
-        });
+        return NextResponse.json({ hint: fallbackExplanation });
       }
 
       const data = (await res.json()) as {
@@ -146,16 +148,13 @@ Student's question: ${doubt || "I don't understand this question."}
       };
       const rawHint =
         data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "";
-      return NextResponse.json({ hint: stripDirectAnswer(rawHint, options) });
-    } catch {
+      const cleaned = stripDirectAnswer(rawHint, options);
+
       return NextResponse.json({
-        hint: buildLocalTutorHint(
-          q,
-          doubt,
-          test.level || "B1",
-          test.topic || "English"
-        ),
+        hint: cleaned || fallbackExplanation,
       });
+    } catch {
+      return NextResponse.json({ hint: fallbackExplanation });
     }
   } catch (error) {
     console.error("POST /api/tests/[id]/hint error:", error);

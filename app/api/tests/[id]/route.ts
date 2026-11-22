@@ -1,81 +1,3 @@
-
-async function handleParticipantModeration(
-  id: string,
-  body: Record<string, unknown>
-) {
-  const action = typeof body.action === "string" ? body.action : "";
-  const targetUserId =
-    typeof body.targetUserId === "string" ? body.targetUserId.trim() : "";
-  const participantId =
-    typeof body.participantId === "string" ? body.participantId.trim() : "";
-
-  if (!action || (!targetUserId && !participantId)) return null;
-
-  const dbAny = prisma as typeof prisma & {
-    test: any;
-    testParticipant: any;
-  };
-
-  const currentTest = await dbAny.test.findUnique({ where: { id } });
-  if (!currentTest) return { error: "Test topilmadi.", status: 404 };
-
-  let resolvedUserId = targetUserId;
-  if (!resolvedUserId && participantId) {
-    const pRow = await dbAny.testParticipant.findUnique({
-      where: { id: participantId },
-    });
-    if (pRow) resolvedUserId = pRow.userId;
-  }
-
-  if (action === "kick") {
-    if (participantId) {
-      await dbAny.testParticipant.deleteMany({ where: { id: participantId } });
-    } else if (resolvedUserId) {
-      await dbAny.testParticipant.deleteMany({
-        where: { testId: id, userId: resolvedUserId },
-      });
-    }
-    return { ok: true, message: "Qatnashuvchi testdan chiqarildi." };
-  }
-
-  if (action === "block" && resolvedUserId) {
-    await dbAny.testParticipant.deleteMany({
-      where: { testId: id, userId: resolvedUserId },
-    });
-    const existingBlocked: string[] = Array.isArray(currentTest.blockedUserIds)
-      ? currentTest.blockedUserIds
-      : [];
-    const nextBlocked = Array.from(new Set([...existingBlocked, resolvedUserId]));
-    try {
-      await dbAny.test.update({
-        where: { id },
-        data: { blockedUserIds: nextBlocked },
-      });
-    } catch {
-      // Fallback if column not migrated yet
-    }
-    return { ok: true, message: "Foydalanuvchi testdan bloklandi." };
-  }
-
-  if (action === "unblock" && resolvedUserId) {
-    const existingBlocked: string[] = Array.isArray(currentTest.blockedUserIds)
-      ? currentTest.blockedUserIds
-      : [];
-    const nextBlocked = existingBlocked.filter((u) => u !== resolvedUserId);
-    try {
-      await dbAny.test.update({
-        where: { id },
-        data: { blockedUserIds: nextBlocked },
-      });
-    } catch {
-      // Fallback if column not migrated yet
-    }
-    return { ok: true, message: "Block olib tashlandi." };
-  }
-
-  return null;
-}
-
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAuthUserId } from "@/app/api/tests/route";
@@ -83,28 +5,17 @@ import { requireAuthUserId } from "@/app/api/tests/route";
 const db = prisma as typeof prisma & {
   test: any;
   testParticipant: any;
-  user: any;
 };
 
 const testInclude = {
   creator: {
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      userName: true,
-    },
+    select: { id: true, firstName: true, lastName: true, userName: true },
   },
   participants: {
     orderBy: { joinedAt: "desc" as const },
     include: {
       user: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          userName: true,
-        },
+        select: { id: true, firstName: true, lastName: true, userName: true },
       },
     },
   },
@@ -116,77 +27,80 @@ export async function GET(
 ) {
   try {
     const { id } = await context.params;
-    const authUserId = await requireAuthUserId(req);
+    const currentUserId = await requireAuthUserId(req);
 
-    const test = await db.test.findUnique({
+    const existing = await db.test.findUnique({
       where: { id },
       include: testInclude,
     });
 
-    if (!test) {
+    if (!existing) {
       return NextResponse.json({ error: "Test topilmadi." }, { status: 404 });
     }
 
-    let autoJoined = false;
-    if (authUserId) {
-      const alreadyIn = (test.participants || []).some(
-        (p: { userId: string }) => p.userId === authUserId
+    const isFounder = Boolean(currentUserId && currentUserId === existing.creatorId);
+    const blockedIds: string[] = Array.isArray(existing.blockedUserIds)
+      ? existing.blockedUserIds
+      : [];
+
+    if (currentUserId && blockedIds.includes(currentUserId) && !isFounder) {
+      return NextResponse.json(
+        { error: "Siz ushbu testdan bloklangansiz (Blocked)." },
+        { status: 403 }
       );
+    }
 
-      if (!alreadyIn) {
-        if (
-          test.maxParticipants !== null &&
-          test.maxParticipants !== undefined &&
-          (test.participants?.length ?? 0) >= test.maxParticipants
-        ) {
-          return NextResponse.json(
-            {
-              test,
-              error: `Qatnashuvchilar limiti (${test.maxParticipants} ta) to'lgan.`,
-            },
-            { status: 403 }
-          );
-        }
+    let autoJoined = false;
+    let activeTest = existing;
 
+    if (
+      currentUserId &&
+      existing.status === "OPEN" &&
+      !blockedIds.includes(currentUserId)
+    ) {
+      const alreadyJoined = Array.isArray(existing.participants)
+        ? existing.participants.some((p: { userId: string }) => p.userId === currentUserId)
+        : false;
+
+      const currentCount = Array.isArray(existing.participants)
+        ? existing.participants.length
+        : 0;
+      const withinCapacity =
+        existing.maxParticipants === null ||
+        existing.maxParticipants === undefined ||
+        currentCount < existing.maxParticipants;
+
+      if (!alreadyJoined && withinCapacity) {
         try {
           await db.testParticipant.create({
-            data: {
-              testId: id,
-              userId: authUserId,
-            },
+            data: { testId: id, userId: currentUserId },
           });
           autoJoined = true;
-        } catch (err: unknown) {
-          const code =
-            typeof err === "object" && err !== null && "code" in err
-              ? (err as { code?: string }).code
-              : undefined;
-          if (code === "P2003") {
-            const firstUser = await db.user.findFirst({ select: { id: true } });
-            if (firstUser?.id) {
-              const existsFirst = (test.participants || []).some(
-                (p: { userId: string }) => p.userId === firstUser.id
-              );
-              if (!existsFirst) {
-                await db.testParticipant.create({
-                  data: { testId: id, userId: firstUser.id },
-                });
-                autoJoined = true;
-              }
-            }
-          }
+          const refreshed = await db.test.findUnique({
+            where: { id },
+            include: testInclude,
+          });
+          if (refreshed) activeTest = refreshed;
+        } catch {
+          // Ignore duplicate join race
         }
       }
     }
 
-    const refreshed = autoJoined
-      ? await db.test.findUnique({ where: { id }, include: testInclude })
-      : test;
+    // Only founder receives full participants list & blockedUserIds
+    const sanitizedTest = isFounder
+      ? activeTest
+      : {
+          ...activeTest,
+          blockedUserIds: [],
+          participants: [],
+        };
 
     return NextResponse.json({
-      test: refreshed,
-      currentUserId: authUserId,
+      test: sanitizedTest,
       autoJoined,
+      isFounder,
+      currentUserId,
     });
   } catch (error) {
     console.error("GET /api/tests/[id] error:", error);
@@ -202,67 +116,101 @@ export async function PATCH(
   context: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await context.params;
+    const currentUserId = await requireAuthUserId(req);
+
+    const existing = await db.test.findUnique({ where: { id } });
+    if (!existing) {
+      return NextResponse.json({ error: "Test topilmadi." }, { status: 404 });
+    }
+
+    if (currentUserId && existing.creatorId !== currentUserId) {
+      return NextResponse.json(
+        { error: "Faqat test yaratuvchisi (Founder) bu amalni bajara oladi." },
+        { status: 403 }
+      );
+    }
+
     const rawBody = await req.json();
     const body = (
       rawBody && typeof rawBody === "object" ? rawBody : {}
     ) as Record<string, unknown>;
 
-    const modRes = await handleParticipantModeration(id, body);
-    if (modRes) {
-      if ("error" in modRes) {
-        return NextResponse.json(
-          { error: modRes.error },
-          { status: modRes.status || 400 }
-        );
-      }
-      return NextResponse.json(modRes);
+    const action = typeof body.action === "string" ? body.action : "";
+    const targetUserId =
+      typeof body.targetUserId === "string" ? body.targetUserId.trim() : "";
+    const participantId =
+      typeof body.participantId === "string" ? body.participantId.trim() : "";
+
+    let resolvedUserId = targetUserId;
+    if (!resolvedUserId && participantId) {
+      const pRow = await db.testParticipant.findUnique({
+        where: { id: participantId },
+      });
+      if (pRow) resolvedUserId = pRow.userId;
     }
 
+    if (action === "kick") {
+      if (participantId) {
+        await db.testParticipant.deleteMany({ where: { id: participantId } });
+      } else if (resolvedUserId) {
+        await db.testParticipant.deleteMany({
+          where: { testId: id, userId: resolvedUserId },
+        });
+      }
+      const updated = await db.test.findUnique({ where: { id }, include: testInclude });
+      return NextResponse.json({
+        test: updated,
+        message: "Qatnashuvchi testdan chiqarildi.",
+      });
+    }
 
-    const data: Record<string, unknown> = {};
+    if (action === "block" && resolvedUserId) {
+      await db.testParticipant.deleteMany({
+        where: { testId: id, userId: resolvedUserId },
+      });
+      const prevBlocked: string[] = Array.isArray(existing.blockedUserIds)
+        ? existing.blockedUserIds
+        : [];
+      const nextBlocked = Array.from(new Set([...prevBlocked, resolvedUserId]));
+      const updated = await db.test.update({
+        where: { id },
+        data: { blockedUserIds: nextBlocked },
+        include: testInclude,
+      });
+      return NextResponse.json({
+        test: updated,
+        message: "Foydalanuvchi bloklandi va testdan chiqarildi.",
+      });
+    }
 
+    if (action === "unblock" && resolvedUserId) {
+      const prevBlocked: string[] = Array.isArray(existing.blockedUserIds)
+        ? existing.blockedUserIds
+        : [];
+      const nextBlocked = prevBlocked.filter((u) => u !== resolvedUserId);
+      const updated = await db.test.update({
+        where: { id },
+        data: { blockedUserIds: nextBlocked },
+        include: testInclude,
+      });
+      return NextResponse.json({
+        test: updated,
+        message: "Block olib tashlandi.",
+      });
+    }
+
+    const updateData: Record<string, unknown> = {};
     if (body.status === "OPEN" || body.status === "CLOSED") {
-      data.status = body.status;
+      updateData.status = body.status;
     }
-
-    if (body.maxParticipants !== undefined) {
-      if (body.maxParticipants === null || body.maxParticipants === "") {
-        data.maxParticipants = null;
-      } else {
-        const parsed = Number(body.maxParticipants);
-        data.maxParticipants =
-          Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
-      }
-    }
-
-    if (body.startsAt !== undefined) {
-      if (!body.startsAt) {
-        data.startsAt = null;
-      } else {
-        const d = new Date(String(body.startsAt));
-        data.startsAt = Number.isNaN(d.getTime()) ? null : d;
-      }
-    }
-
-    if (body.endsAt !== undefined) {
-      if (!body.endsAt) {
-        data.endsAt = null;
-      } else {
-        const d = new Date(String(body.endsAt));
-        data.endsAt = Number.isNaN(d.getTime()) ? null : d;
-      }
-    }
-
-    if (
-      typeof body.designTheme === "string" &&
-      ["minimal", "card", "paper"].includes(body.designTheme)
-    ) {
-      data.designTheme = body.designTheme;
+    if (typeof body.allowParticipantAi === "boolean") {
+      updateData.allowParticipantAi = body.allowParticipantAi;
     }
 
     const updated = await db.test.update({
       where: { id },
-      data,
+      data: updateData,
       include: testInclude,
     });
 
@@ -270,7 +218,7 @@ export async function PATCH(
   } catch (error) {
     console.error("PATCH /api/tests/[id] error:", error);
     return NextResponse.json(
-      { error: "Test sozlamalarini yangilashda xatolik yuz berdi." },
+      { error: "Testni yangilashda xatolik yuz berdi." },
       { status: 500 }
     );
   }
@@ -281,101 +229,54 @@ export async function POST(
   context: { params: Promise<{ id: string }> }
 ) {
   try {
-    const authUserId = await requireAuthUserId(req);
-    if (!authUserId) {
-      return NextResponse.json(
-        { error: "JWTAuthGuard: Avval tizimga kiring (401 Unauthorized)." },
-        { status: 401 }
-      );
+    const { id } = await context.params;
+    const userId = await requireAuthUserId(req);
+    if (!userId) {
+      return NextResponse.json({ error: "Avval tizimga kiring." }, { status: 401 });
     }
 
-    const { id } = await context.params;
-    const test = await db.test.findUnique({
-      where: { id },
-      include: { participants: true },
-    });
-
-    if (!test) {
+    const existing = await db.test.findUnique({ where: { id } });
+    if (!existing) {
       return NextResponse.json({ error: "Test topilmadi." }, { status: 404 });
     }
 
-    const body = (await req.json().catch(() => ({}))) as {
-      score?: unknown;
-      total?: unknown;
-    };
-
-    const isSubmittingScore =
-      typeof body.score === "number" && Number.isFinite(body.score);
-
-    const now = new Date();
-    if (isSubmittingScore) {
-      if (test.startsAt && now < new Date(test.startsAt)) {
-        return NextResponse.json(
-          { error: "Test hali boshlanmagan." },
-          { status: 403 }
-        );
-      }
-      if (test.endsAt && now > new Date(test.endsAt)) {
-        return NextResponse.json(
-          { error: "Test vaqti tugagan." },
-          { status: 403 }
-        );
-      }
-    }
-
-    const existingParticipant = (test.participants || []).find(
-      (p: { userId: string }) => p.userId === authUserId
-    );
-
-    if (
-      !existingParticipant &&
-      test.maxParticipants !== null &&
-      test.maxParticipants !== undefined &&
-      (test.participants?.length ?? 0) >= test.maxParticipants
-    ) {
+    const blockedIds: string[] = Array.isArray(existing.blockedUserIds)
+      ? existing.blockedUserIds
+      : [];
+    if (blockedIds.includes(userId) && existing.creatorId !== userId) {
       return NextResponse.json(
-        { error: `Qatnashuvchilar limiti (${test.maxParticipants} ta) to'lgan.` },
+        { error: "Siz ushbu testdan bloklangansiz." },
         { status: 403 }
       );
     }
 
-    const score = isSubmittingScore
-      ? Math.max(0, Math.round(Number(body.score)))
-      : existingParticipant?.score ?? null;
-
+    const body = (await req.json()) as { score?: unknown; total?: unknown };
+    const score = typeof body.score === "number" ? Math.max(0, Math.round(body.score)) : 0;
     const total =
-      typeof body.total === "number" && Number.isFinite(body.total)
-        ? Math.max(1, Math.round(body.total))
-        : existingParticipant?.total ?? test.questionCount;
+      typeof body.total === "number" && body.total > 0
+        ? Math.round(body.total)
+        : existing.questionCount;
 
-    const participant = await db.testParticipant.upsert({
-      where: {
-        testId_userId: { testId: id, userId: authUserId },
-      },
-      update: {
-        ...(isSubmittingScore
-          ? { score, total, completedAt: new Date() }
-          : {}),
-      },
-      create: {
-        testId: id,
-        userId: authUserId,
-        ...(isSubmittingScore
-          ? { score, total, completedAt: new Date() }
-          : {}),
-      },
-      include: {
-        user: {
-          select: { id: true, firstName: true, lastName: true, userName: true },
-        },
-      },
+    const existingPart = await db.testParticipant.findFirst({
+      where: { testId: id, userId },
     });
 
-    return NextResponse.json({ participant });
+    if (existingPart) {
+      await db.testParticipant.update({
+        where: { id: existingPart.id },
+        data: { score, total, completedAt: new Date() },
+      });
+    } else {
+      await db.testParticipant.create({
+        data: { testId: id, userId, score, total, completedAt: new Date() },
+      });
+    }
+
+    return NextResponse.json({ ok: true, score, total });
   } catch (error) {
     console.error("POST /api/tests/[id] error:", error);
     return NextResponse.json(
-      { error: "Testda qatnashishda xatolik yuz berdi." },
+      { error: "Natijani saqlashda xatolik yuz berdi." },
       { status: 500 }
     );
   }
@@ -386,27 +287,18 @@ export async function DELETE(
   context: { params: Promise<{ id: string }> }
 ) {
   try {
-    const authUserId = await requireAuthUserId(req);
-    if (!authUserId) {
-      return NextResponse.json(
-        { error: "JWTAuthGuard: Avval tizimga kiring (401 Unauthorized)." },
-        { status: 401 }
-      );
-    }
-
     const { id } = await context.params;
+    const currentUserId = await requireAuthUserId(req);
     const existing = await db.test.findUnique({ where: { id } });
     if (!existing) {
       return NextResponse.json({ error: "Test topilmadi." }, { status: 404 });
     }
-
-    if (existing.creatorId !== authUserId) {
+    if (currentUserId && existing.creatorId !== currentUserId) {
       return NextResponse.json(
-        { error: "Faqat test yaratuvchisi (founder) testni o'chira oladi." },
+        { error: "Faqat Founder testni o'chira oladi." },
         { status: 403 }
       );
     }
-
     await db.test.delete({ where: { id } });
     return NextResponse.json({ ok: true });
   } catch (error) {

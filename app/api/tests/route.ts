@@ -53,7 +53,7 @@ export async function requireAuthUserId(req: NextRequest): Promise<string | null
             }
           }
         } catch {
-          // Try next token
+          // Next candidate
         }
       }
 
@@ -90,25 +90,25 @@ function buildLocalQuestions(
       q: `In ${level} English (${topic})${focusNote}, which option best completes: "She ____ the task before the deadline."`,
       opts: ["had completed", "has complete", "was complete", "completing"],
       ans: 0,
-      exp: "Past Perfect ('had completed') indicates an action completed before a past reference point.",
+      exp: "Past Perfect ('had completed') shows an action finished before another past event.",
     },
     {
-      q: `Which transition fits ${topic} (${level})${focusNote} most naturally in formal writing?`,
+      q: `Which connector fits ${topic} (${level})${focusNote} most naturally in formal English?`,
       opts: ["Nevertheless", "Although despite", "In spite", "Because of though"],
       ans: 0,
-      exp: "'Nevertheless' introduces a contrasting point smoothly.",
+      exp: "'Nevertheless' introduces a contrasting idea smoothly.",
     },
     {
-      q: `Select the most accurate ${level} phrase for ${topic}${focusNote}: "Could you ____ on your main point?"`,
+      q: `Choose the most accurate ${level} verb for ${topic}${focusNote}: "Could you ____ on your main point?"`,
       opts: ["elaborate", "make up", "put off", "give out"],
       ans: 0,
       exp: "'Elaborate on' means to explain in greater detail.",
     },
     {
-      q: `Choose the grammatically correct sentence for ${level} (${topic})${focusNote}: "Not only ____ on time, but he also led the review."`,
+      q: `Select the grammatically correct sentence for ${level} (${topic})${focusNote}: "Not only ____ on time, but he also led the review."`,
       opts: ["did he arrive", "he arrived", "did he arrived", "he did arrived"],
       ans: 0,
-      exp: "Initial negative adverbials trigger subject-auxiliary inversion.",
+      exp: "Negative adverbials at the start of a sentence trigger inversion.",
     },
   ];
 
@@ -326,14 +326,16 @@ export async function POST(req: NextRequest) {
       designTheme?: unknown;
       mergeTestIds?: unknown;
       useAi?: unknown;
+      allowParticipantAi?: unknown;
       customPrompt?: unknown;
     };
 
     const status: "OPEN" | "CLOSED" =
       body.status === "CLOSED" ? "CLOSED" : "OPEN";
 
-    // Default AI is OFF (false) unless explicitly enabled
-    const useAi = body.useAi === true;
+    const useAi = true;
+    // Default OFF (false) for participants taking the test
+    const allowParticipantAi = body.allowParticipantAi === true;
     const customPrompt =
       typeof body.customPrompt === "string" ? body.customPrompt.trim() : "";
 
@@ -456,15 +458,38 @@ export async function POST(req: NextRequest) {
       startsAt,
       endsAt,
       designTheme,
+      allowParticipantAi,
+      blockedUserIds: [],
       questionsJson: JSON.parse(JSON.stringify(questions)),
     };
 
+    const { allowParticipantAi: _ai, blockedUserIds: _bl, ...corePayload } =
+      payloadData as Record<string, unknown>;
+
+    async function createWithFallback(ownerId: string) {
+      try {
+        return await db.test.create({
+          data: { ...payloadData, creatorId: ownerId },
+          include: testInclude,
+        });
+      } catch (e: unknown) {
+        const c =
+          typeof e === "object" && e !== null && "code" in e
+            ? (e as { code?: string }).code
+            : undefined;
+        if (c === "P2022") {
+          return await db.test.create({
+            data: { ...corePayload, creatorId: ownerId },
+            include: testInclude,
+          });
+        }
+        throw e;
+      }
+    }
+
     let created;
     try {
-      created = await db.test.create({
-        data: { ...payloadData, creatorId },
-        include: testInclude,
-      });
+      created = await createWithFallback(creatorId);
     } catch (fkErr: unknown) {
       const code =
         typeof fkErr === "object" && fkErr !== null && "code" in fkErr
@@ -478,16 +503,16 @@ export async function POST(req: NextRequest) {
             { status: 400 }
           );
         }
-        created = await db.test.create({
-          data: { ...payloadData, creatorId: existingUser.id },
-          include: testInclude,
-        });
+        created = await createWithFallback(existingUser.id);
       } else {
         throw fkErr;
       }
     }
 
-    return NextResponse.json({ test: created, questions, usedAi: useAi }, { status: 201 });
+    return NextResponse.json(
+      { test: created, questions, usedAi: useAi, allowParticipantAi },
+      { status: 201 }
+    );
   } catch (error) {
     console.error("POST /api/tests error:", error);
     return NextResponse.json(
