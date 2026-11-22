@@ -23,6 +23,13 @@ interface ParticipantRow {
   user: { firstName: string; lastName: string | null; userName: string };
 }
 
+interface ModeratedUser {
+  id: string;
+  firstName: string;
+  lastName: string | null;
+  userName: string;
+}
+
 interface TestDetail {
   id: string;
   title: string;
@@ -32,24 +39,31 @@ interface TestDetail {
   status: "OPEN" | "CLOSED";
   allowParticipantAi: boolean;
   blockedUserIds?: string[];
+  blockedUsers?: ModeratedUser[];
+  kickedUsers?: ModeratedUser[];
   questionsJson: TestQuestion[];
-  creator: { id: string; userName: string };
+  creatorId: string;
+  creator: { id: string; firstName?: string; lastName?: string | null; userName: string };
   participants: ParticipantRow[];
 }
 
 function TestDetailContent() {
   const params = useParams<{ id: string }>();
   const testId = params?.id ?? "";
-const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = () => themeCtx.setTheme(theme === "dark" ? "light" : "dark");
+  const themeCtx = useTheme();
+  const theme = themeCtx.theme;
+  const toggleTheme = () => themeCtx.setTheme(theme === "dark" ? "light" : "dark");
   const notifyApi = useNotification();
 
   const [test, setTest] = useState<TestDetail | null>(null);
   const [isFounder, setIsFounder] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [blockedState, setBlockedState] = useState<{ isBlocked?: boolean; isKicked?: boolean; message: string } | null>(null);
 
   const [answers, setAnswers] = useState<Record<number, number>>({});
   const [submitted, setSubmitted] = useState(false);
   const [savedResult, setSavedResult] = useState<{ score: number; total: number } | null>(null);
+  const [savedUserId, setSavedUserId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const [doubts, setDoubts] = useState<Record<number, string>>({});
@@ -73,7 +87,21 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
         cache: "no-store",
       });
       const data = await res.json();
+
+      if (res.status === 403) {
+        setBlockedState({
+          isBlocked: data.isBlocked,
+          isKicked: data.isKicked,
+          message: data.error || "Sizga ushbu testga kirish taqiqlangan.",
+        });
+        setTest(null);
+        return;
+      }
+
+      setBlockedState(null);
       if (typeof data.isFounder === "boolean") setIsFounder(data.isFounder);
+      if (typeof data.currentUserId === "string") setSavedUserId(data.currentUserId);
+
       if (res.ok && data.test) {
         setTest(data.test);
         if (data.currentUserParticipant && typeof data.currentUserParticipant.score === "number") {
@@ -85,7 +113,8 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
         } else if (Array.isArray(data.test.participants) && data.currentUserId) {
           const mine = data.test.participants.find(
             (p: { userId?: string; score?: number | null; total?: number | null }) =>
-              p.userId === data.currentUserId && (typeof p.score === "number" || (typeof p.score === "string" && p.score !== ""))
+              p.userId === data.currentUserId &&
+              (typeof p.score === "number" || (typeof p.score === "string" && p.score !== ""))
           );
           if (mine) {
             setSavedResult({
@@ -96,8 +125,8 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
           }
         }
 
-        if (data.joined) {
-          notifyApi.show("Siz testga qo'shildingiz.");
+        if (data.autoJoined) {
+          notifyApi.show("Siz testga muvaffaqiyatli qo'shildingiz.");
         }
       } else {
         notifyApi.show(data.error || "Testni yuklashda xato.");
@@ -131,7 +160,6 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
       // ignore storage errors
     }
   }, [testId]);
-
 
   const questions: TestQuestion[] = Array.isArray(test?.questionsJson)
     ? test.questionsJson
@@ -174,7 +202,6 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
           `Test yakunlandi: ${correctCount}/${questions.length} to'g'ri javob.`,
           "success"
         );
-        await loadTest();
       } else {
         notifyApi.show(data.error || "Natijani saqlashda xato.");
       }
@@ -201,7 +228,7 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
   }
 
   async function handleModerate(
-    action: "kick" | "block" | "unblock",
+    action: "kick" | "unkick" | "block" | "unblock",
     targetUserId: string,
     participantId?: string
   ) {
@@ -216,7 +243,7 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
       const data = await res.json();
       if (res.ok && data.test) {
         setTest(data.test);
-        notifyApi.show(data.message || "Qatnashuvchi holati yangilandi.");
+        notifyApi.show(data.message || "Qatnashuvchi holati muvaffaqiyatli yangilandi.");
       } else {
         notifyApi.show(data.error || "Amal bajarilmadi.");
       }
@@ -284,7 +311,10 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
 
   const isLight = theme === "light";
   const participants = Array.isArray(test?.participants) ? test.participants : [];
+  const blockedUsers = Array.isArray(test?.blockedUsers) ? test.blockedUsers : [];
+  const kickedUsers = Array.isArray(test?.kickedUsers) ? test.kickedUsers : [];
   const blockedIds = Array.isArray(test?.blockedUserIds) ? test.blockedUserIds : [];
+  const totalBlockedCount = Math.max(blockedUsers.length, blockedIds.length);
   const aiEnabled = Boolean(test?.allowParticipantAi);
 
   return (
@@ -328,7 +358,7 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
                       : "bg-neutral-900 border-neutral-700"
                   }`}
                 >
-                  Kirganlar ({participants.length}) / Datalar
+                  Qatnashuvchilar ({participants.length}) / Moderatsiya
                 </button>
               </>
             )}
@@ -359,80 +389,168 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
         </div>
 
         {/* Universal Modal for Participants & Moderation */}
-        <UiModal open={participantsModalOpen} onClose={() => setParticipantsModalOpen(false)}
-          title={`Kirganlar & Datalar (${participants.length} ta)`}
-          subtitle={`Blocklangan foydalanuvchilar: ${blockedIds.length} ta`}
+        <UiModal
+          open={participantsModalOpen}
+          onClose={() => setParticipantsModalOpen(false)}
+          title={`Qatnashuvchilar & Moderatsiya (${participants.length} ta)`}
+          subtitle={`Blocklanganlar: ${totalBlockedCount} ta | Chiqarilganlar: ${kickedUsers.length} ta`}
+          maxWidthClass="max-w-2xl"
         >
-          <div className="space-y-3 text-xs">
-            {participants.length === 0 ? (
-              <p className="opacity-70">Hozircha testga kirgan qatnashuvchilar yo&apos;q.</p>
-            ) : (
-              <div className="divide-y divide-neutral-800">
-                {participants.map((p) => {
-                  const busy = moderatingId === p.id || moderatingId === p.userId;
-                  const fullName =
-                    `${p.user?.firstName || ""} ${p.user?.lastName || ""}`.trim() ||
-                    p.user?.userName;
-                  const scoreText =
-                    (typeof p.score === "number" || (typeof p.score === "string" && p.score !== ""))
-                      ? `Natija: ${p.score}/${p.total ?? test.questionCount}`
-                      : "Jarayonda";
-                  return (
-                    <div
-                      key={p.id}
-                      className="py-2.5 flex flex-wrap items-center justify-between gap-2"
-                    >
-                      <div>
-                        <span className="font-semibold">{fullName}</span>{" "}
-                        <span className="opacity-65">@{p.user?.userName} · {scoreText}</span>
-                        <span className="ml-2 px-2 py-0.5 rounded bg-neutral-800 text-neutral-200">
-                          {p.score !== null && p.total !== null
-                            ? `Natija: ${p.score}/${p.total}`
-                            : "Jarayonda"}
-                        </span>
+          <div className="space-y-5 text-xs">
+            {/* Active Participants List */}
+            <div>
+              <p className="font-semibold text-sm mb-2 opacity-90">Faol qatnashuvchilar</p>
+              {participants.length === 0 ? (
+                <p className="opacity-60 italic py-2">Hozircha testga kirgan boshqa qatnashuvchilar yo&apos;q.</p>
+              ) : (
+                <div className="divide-y divide-neutral-800 border border-neutral-800 rounded-xl overflow-hidden px-3">
+                  {participants.map((p) => {
+                    const busy = moderatingId === p.id || moderatingId === p.userId;
+                    const isSelf = p.userId === test?.creatorId || (savedUserId && p.userId === savedUserId);
+                    const fullName =
+                      `${p.user?.firstName || ""} ${p.user?.lastName || ""}`.trim() ||
+                      p.user?.userName ||
+                      "Foydalanuvchi";
+                    const numScore =
+                      typeof p.score === "number" && !Number.isNaN(p.score)
+                        ? p.score
+                        : null;
+                    const numTotal =
+                      typeof p.total === "number" && p.total > 0
+                        ? p.total
+                        : test?.questionCount || 0;
+                    const resultLabel =
+                      numScore !== null
+                        ? `Natija: ${numScore}/${numTotal} (${Math.round((numScore / Math.max(1, numTotal)) * 100)}%)`
+                        : "Jarayonda";
+
+                    return (
+                      <div
+                        key={p.id}
+                        className="py-3 flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold text-neutral-100">{fullName}</span>
+                            <span className="opacity-60">@{p.user?.userName}</span>
+                            {p.userId === test?.creatorId && (
+                              <span className="px-1.5 py-0.5 rounded bg-indigo-900/60 text-indigo-300 text-[10px] font-bold">
+                                FOUNDER
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-1">
+                            <span className="px-2 py-0.5 rounded bg-neutral-800 text-neutral-300 text-[11px]">
+                              {resultLabel}
+                            </span>
+                          </div>
+                        </div>
+
+                        {!isSelf && (
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => handleModerate("kick", p.userId, p.id)}
+                              className="px-2.5 py-1.5 rounded-lg border border-amber-500/50 text-amber-300 hover:bg-amber-500/10 cursor-pointer disabled:opacity-40 transition"
+                            >
+                              Chiqarish (Kick)
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => handleModerate("block", p.userId, p.id)}
+                              className="px-2.5 py-1.5 rounded-lg border border-rose-500/50 text-rose-300 hover:bg-rose-500/10 cursor-pointer disabled:opacity-40 transition"
+                            >
+                              Block qilish
+                            </button>
+                          </div>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2">
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Blocked Users Section with Clear Identity */}
+            {totalBlockedCount > 0 && (
+              <div className="pt-3 border-t border-neutral-800 space-y-2">
+                <p className="font-semibold text-sm text-rose-400">
+                  Blocklangan foydalanuvchilar ({totalBlockedCount} ta)
+                </p>
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {blockedUsers.length > 0 ? (
+                    blockedUsers.map((b) => (
+                      <div
+                        key={b.id}
+                        className="flex items-center justify-between p-2.5 rounded-xl bg-rose-950/20 border border-rose-800/40"
+                      >
+                        <div>
+                          <p className="font-semibold text-rose-200">
+                            {`${b.firstName || ""} ${b.lastName || ""}`.trim() || b.userName}
+                          </p>
+                          <p className="text-[11px] opacity-70">@{b.userName}</p>
+                        </div>
                         <button
                           type="button"
-                          disabled={busy}
-                          onClick={() => handleModerate("kick", p.userId, p.id)}
-                          className="px-2.5 py-1 rounded border border-amber-500/50 text-amber-300 cursor-pointer disabled:opacity-40"
+                          disabled={moderatingId === b.id}
+                          onClick={() => handleModerate("unblock", b.id)}
+                          className="px-3 py-1 rounded-lg border border-emerald-500/50 text-emerald-300 hover:bg-emerald-500/10 cursor-pointer disabled:opacity-40"
                         >
-                          Chiqarish
-                        </button>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => handleModerate("block", p.userId, p.id)}
-                          className="px-2.5 py-1 rounded border border-rose-500/50 text-rose-300 cursor-pointer disabled:opacity-40"
-                        >
-                          Block qilish
+                          Blokdan chiqarish
                         </button>
                       </div>
-                    </div>
-                  );
-                })}
+                    ))
+                  ) : (
+                    blockedIds.map((bId) => (
+                      <div
+                        key={bId}
+                        className="flex items-center justify-between p-2.5 rounded-xl bg-rose-950/20 border border-rose-800/40"
+                      >
+                        <code className="text-[11px]">{bId}</code>
+                        <button
+                          type="button"
+                          disabled={moderatingId === bId}
+                          onClick={() => handleModerate("unblock", bId)}
+                          className="px-3 py-1 rounded-lg border border-emerald-500/50 text-emerald-300 hover:bg-emerald-500/10 cursor-pointer disabled:opacity-40"
+                        >
+                          Blokdan chiqarish
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             )}
 
-            {blockedIds.length > 0 && (
-              <div className="pt-3 border-t border-neutral-800 space-y-1.5">
-                <p className="font-semibold opacity-75">Blocklangan ID lar:</p>
-                <div className="flex flex-wrap gap-2">
-                  {blockedIds.map((bId) => (
-                    <span
-                      key={bId}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-rose-950/40 border border-rose-700/40"
+            {/* Kicked Users Section with Re-admit button */}
+            {kickedUsers.length > 0 && (
+              <div className="pt-3 border-t border-neutral-800 space-y-2">
+                <p className="font-semibold text-sm text-amber-400">
+                  Testdan chiqarilganlar ({kickedUsers.length} ta)
+                </p>
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {kickedUsers.map((k) => (
+                    <div
+                      key={k.id}
+                      className="flex items-center justify-between p-2.5 rounded-xl bg-amber-950/20 border border-amber-800/40"
                     >
-                      <code>{bId}</code>
+                      <div>
+                        <p className="font-semibold text-amber-200">
+                          {`${k.firstName || ""} ${k.lastName || ""}`.trim() || k.userName}
+                        </p>
+                        <p className="text-[11px] opacity-70">@{k.userName}</p>
+                      </div>
                       <button
                         type="button"
-                        onClick={() => handleModerate("unblock", bId)}
-                        className="underline cursor-pointer"
+                        disabled={moderatingId === k.id}
+                        onClick={() => handleModerate("unkick", k.id)}
+                        className="px-3 py-1 rounded-lg border border-indigo-500/50 text-indigo-300 hover:bg-indigo-500/10 cursor-pointer disabled:opacity-40"
                       >
-                        Unblock
+                        Qayta ruxsat berish
                       </button>
-                    </span>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -441,7 +559,9 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
         </UiModal>
 
         {/* Universal Modal for .PDF Export */}
-        <UiModal open={pdfModalOpen} onClose={() => setPdfModalOpen(false)}
+        <UiModal
+          open={pdfModalOpen}
+          onClose={() => setPdfModalOpen(false)}
           title=".PDF Eksport Sozlamalari"
           subtitle="Akademik varaq ko'rinishi va qo'shimcha maydonlar"
           maxWidthClass="max-w-md"
@@ -512,6 +632,25 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
 
         {loading ? (
           <p className="text-sm opacity-75">Test yuklanmoqda...</p>
+        ) : blockedState ? (
+          /* Dedicated Blocked / Kicked Card */
+          <div className="rounded-2xl border border-rose-500/40 bg-rose-950/20 p-8 text-center space-y-4 max-w-lg mx-auto">
+            <div className="w-12 h-12 mx-auto rounded-full bg-rose-500/20 text-rose-400 flex items-center justify-center text-2xl font-bold">
+              ✕
+            </div>
+            <h2 className="text-lg font-bold text-rose-300">Kirish taqiqlangan</h2>
+            <p className="text-xs text-rose-200/80 leading-relaxed">
+              {blockedState.message}
+            </p>
+            <div className="pt-2">
+              <Link
+                href="/tests"
+                className="inline-block px-4 py-2 rounded-xl text-xs font-semibold bg-rose-600 text-white hover:bg-rose-500"
+              >
+                Test Studio ga qaytish
+              </Link>
+            </div>
+          </div>
         ) : !test ? (
           <div className="rounded-2xl border border-neutral-800 p-6 text-sm">
             Test topilmadi: <code>{testId}</code>
@@ -716,7 +855,7 @@ export default function TestByIdPage() {
         </main>
       }
     >
-      <TestDetailContent/>
+      <TestDetailContent />
     </Suspense>
   );
 }

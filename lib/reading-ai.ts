@@ -26,6 +26,16 @@ export interface GradedQuestionResult {
   aiFeedback: string;
 }
 
+const PREFERRED_READING_MODELS = [
+  "gemini-3.6-flash",
+  "gemini-3.8-flash",
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-flash-latest",
+  "gemma-4-31b-it",
+];
+
 function fallbackPassages(params: {
   topic: string;
   level: string;
@@ -49,9 +59,9 @@ function fallbackPassages(params: {
   const countParas = length === "short" ? 1 : length === "long" ? 3 : 2;
 
   const paras = [
-    `Strong readers approach ${topic} at the ${level} level by identifying main claims, supporting evidence, and subtle tone shifts rather than guessing.${focus}`,
-    `Comparing how ideas connect across sentences reveals cause-and-effect relationships and implied conclusions even in dense passages.`,
-    `Consistent reflection on difficult questions helps learners refine accuracy and build confidence across complex reading tasks.`,
+    `Strong readers approach ${topic} at the ${level} level by analyzing primary arguments, supporting evidence, and contextual subtleties rather than relying on guesswork.${focus}`,
+    `Examining how ideas logically transition across paragraphs illuminates cause-and-effect relationships and critical implications within the text.`,
+    `Consistent practice with varied academic registers fosters greater fluency, sharpens critical thinking, and ensures high accuracy on comprehension benchmarks.`,
   ];
 
   const bodyText = paras.slice(0, countParas).join(" ");
@@ -64,40 +74,58 @@ function fallbackPassages(params: {
           return {
             id: qIdx + 1,
             type: "question",
-            question: `Passage ${pIdx + 1}, Q${qIdx + 1}: Explain the main idea or key point discussed regarding ${topic} (${level}).`,
+            question: `Passage ${pIdx + 1}, Q${qIdx + 1}: Explain how the author structures the discussion regarding ${topic} (${level}).`,
             options: [],
             correctIndex: 0,
             modelAnswer:
-              "Identify the central argument and support it with key details from the passage.",
+              "The author presents the core premise directly, supporting it with logical transitions and evidence.",
             explanation:
-              "A good answer clearly states the core idea and references supporting details from the text.",
+              "A comprehensive answer highlights the core thesis and references textual supporting details.",
           };
         }
 
         return {
           id: qIdx + 1,
           type: "test",
-          question: `Passage ${pIdx + 1}, Q${qIdx + 1}: Which statement best reflects the passage on ${topic} (${level})?`,
+          question: `Passage ${pIdx + 1}, Q${qIdx + 1}: Which assertion best represents the core thesis regarding ${topic} (${level})?`,
           options: [
-            "Analyzing main ideas and supporting evidence improves comprehension",
-            "Ignoring context clues is the fastest way to read",
-            "Every detail in a passage carries equal weight",
-            "Reading speed matters more than understanding meaning",
+            "Analytical reading of key claims and textual evidence substantially improves comprehension",
+            "Reading rapidly without reviewing transitional context guarantees maximum retention",
+            "Individual sentences should always be interpreted in complete isolation",
+            "Comprehension depends exclusively on memorizing arbitrary vocabulary lists",
           ],
           correctIndex: 0,
           explanation:
-            "The passage highlights identifying main claims and supporting evidence for accurate comprehension.",
+            "The passage emphasizes that active analysis of claims and context provides accurate comprehension.",
         };
       }
     );
 
     return {
       id: pIdx + 1,
-      title: `Reading ${pIdx + 1}: ${topic} (${level})`,
+      title: `Reading Passage ${pIdx + 1}: ${topic} (${level})`,
       text: passageCount > 1 ? `[Passage ${pIdx + 1}/${passageCount}] ${bodyText}` : bodyText,
       questions,
     };
   });
+}
+
+function cleanAndParseJson(rawText: string): unknown {
+  try {
+    const cleaned = rawText
+      .replace(/```(?:json)?\s*/gi, "")
+      .replace(/```/g, "")
+      .trim();
+
+    const firstBrace = cleaned.indexOf("[");
+    const lastBrace = cleaned.lastIndexOf("]");
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      return JSON.parse(cleaned.substring(firstBrace, lastBrace + 1));
+    }
+    return JSON.parse(cleaned);
+  } catch {
+    return null;
+  }
 }
 
 function normalizePassages(
@@ -119,23 +147,29 @@ function normalizePassages(
   for (let p = 0; p < params.passageCount; p++) {
     const item = raw[p];
     const fb = fbList[p] || fbList[0];
+
     if (!item || typeof item !== "object") {
-      out.push({ ...fb, id: p + 1 });
+      out.push(fb);
       continue;
     }
 
     const obj = item as Record<string, unknown>;
     const pTitle =
-      typeof obj.title === "string" && obj.title.trim() ? obj.title.trim() : fb.title;
+      typeof obj.title === "string" && obj.title.trim()
+        ? obj.title.trim()
+        : fb.title;
     const pText =
-      typeof obj.text === "string" && obj.text.trim() ? obj.text.trim() : fb.text;
+      typeof obj.text === "string" && obj.text.trim().length >= 40
+        ? obj.text.trim()
+        : fb.text;
 
-    const rawQs = Array.isArray(obj.questions) ? obj.questions : [];
+    const rawQuestions = Array.isArray(obj.questions) ? obj.questions : [];
     const qs: ReadingQuestion[] = [];
 
     for (let q = 0; q < params.questionsPerPassage; q++) {
-      const qItem = rawQs[q];
+      const qItem = rawQuestions[q];
       const fbQ = fb.questions[q] || fb.questions[0];
+
       if (!qItem || typeof qItem !== "object") {
         qs.push({ ...fbQ, id: q + 1, type: params.questionType });
         continue;
@@ -208,7 +242,7 @@ export async function generateReadingWithAi(params: {
   questionType: ReadingQuestionMode;
   customPrompt?: string;
 }): Promise<ReadingPassageItem[]> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
     return fallbackPassages(params);
   }
@@ -222,82 +256,84 @@ export async function generateReadingWithAi(params: {
 
   const qFormatInstruction =
     params.questionType === "question"
-      ? `Each question is an OPEN-ENDED written question (NOT multiple choice). Set "options": [], "correctIndex": 0, and provide a concise "modelAnswer" plus "explanation".`
-      : `Each question is MULTIPLE CHOICE with 4 options in "options": ["...", "...", "...", "..."] and "correctIndex": 0..3.`;
+      ? `Each question is an OPEN-ENDED written comprehension question. Provide "options": [], "correctIndex": 0, plus a clear "modelAnswer" and "explanation".`
+      : `Each question is MULTIPLE CHOICE with exactly 4 options in "options": ["...", "...", "...", "..."] and "correctIndex": 0..3.`;
 
   const extra = params.customPrompt?.trim()
-    ? `Additional instructions: ${params.customPrompt.trim()}`
+    ? `Additional Focus: ${params.customPrompt.trim()}`
     : "";
 
-  const prompt = `Create an English reading set with ${params.passageCount} distinct passage(s).
-Each passage MUST have ${params.questionsPerPassage} questions.
-Topic: ${params.topic}
-CEFR Level: ${params.level}
+  const prompt = `You are a certified Cambridge English reading examiner.
+Create a comprehensive English reading assessment with ${params.passageCount} passage(s).
+Each passage must have EXACTLY ${params.questionsPerPassage} questions.
+Topic: ${params.topic} | CEFR Level: ${params.level}
 Passage Length: ${params.length} (${lengthGuide})
-Question Format: ${params.questionType}
+Question Type: ${params.questionType}
 ${qFormatInstruction}
 ${extra}
 
-Return ONLY valid JSON (no markdown code fences) in this exact format:
+Output ONLY a valid JSON array of objects without Markdown formatting:
 [
   {
-    "title": "string",
-    "text": "string",
+    "title": "Passage Title",
+    "text": "Detailed reading passage content...",
     "questions": [
       {
-        "question": "string",
-        "options": ["string", "string", "string", "string"],
+        "question": "Question text...",
+        "options": ["A", "B", "C", "D"],
         "correctIndex": 0,
-        "modelAnswer": "string",
-        "explanation": "string"
+        "modelAnswer": "Expected answer",
+        "explanation": "Concise rationale"
       }
     ]
   }
 ]`;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30000);
+  for (const model of PREFERRED_READING_MODELS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 35000);
 
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
-        apiKey
-      )}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.7,
-            responseMimeType: "application/json",
-          },
-        }),
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(
+          apiKey
+        )}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0.7,
+              maxOutputTokens: 8192,
+            },
+          }),
+        }
+      );
+
+      if (!res.ok) continue;
+
+      const data = (await res.json()) as {
+        candidates?: Array<{
+          content?: { parts?: Array<{ text?: string }> };
+        }>;
+      };
+      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+      if (!rawText) continue;
+
+      const parsed = cleanAndParseJson(rawText);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return normalizePassages(parsed, params);
       }
-    );
-
-    if (!res.ok) return fallbackPassages(params);
-
-    const data = (await res.json()) as {
-      candidates?: Array<{
-        content?: { parts?: Array<{ text?: string }> };
-      }>;
-    };
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
-    const cleaned = rawText
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
-
-    const parsed = JSON.parse(cleaned);
-    return normalizePassages(parsed, params);
-  } catch {
-    return fallbackPassages(params);
-  } finally {
-    clearTimeout(timer);
+    } catch {
+      // try next model
+    } finally {
+      clearTimeout(timer);
+    }
   }
+
+  return fallbackPassages(params);
 }
 
 export async function gradeReadingAnswersWithAi(params: {
@@ -340,140 +376,50 @@ export async function gradeReadingAnswersWithAi(params: {
         ).length;
 
         const isCorrect =
-          userText.length >= 12 &&
-          (matched >= 1 || userText.split(/\s+/).length >= 5);
+          userText.length >= 10 &&
+          (matched >= 1 || userText.split(/\s+/).length >= 4);
         if (isCorrect) score += 1;
 
         results.push({
           passageIndex: pIdx,
           questionIndex: qIdx,
           selectedIndex: null,
-          textAnswer: userText,
+          textAnswer: userText || "Javob berilmadi",
           isCorrect,
           aiFeedback: isCorrect
-            ? `Qabul qilindi (AI). Namuna fikr: ${q.modelAnswer || q.explanation}`
-            : `Javob qisqa yoki mavzuga yetarlicha aniq emas. ${
-                q.modelAnswer || q.explanation
-              }`,
+            ? "To'g'ri tahlil! Javobingiz matn mazmuniga to'laqonli mos keladi."
+            : userText
+            ? `Qoniqarsiz: Asosiy fikr matndan to'liq aks etmagan. Model javob: ${q.modelAnswer || q.explanation}`
+            : "Javob yozilmadi.",
         });
       } else {
-        const selected =
-          typeof answers[key] === "number" ? answers[key] : null;
+        const selected = answers[key];
         const isCorrect = selected === q.correctIndex;
         if (isCorrect) score += 1;
 
         results.push({
           passageIndex: pIdx,
           questionIndex: qIdx,
-          selectedIndex: selected,
+          selectedIndex: typeof selected === "number" ? selected : null,
           isCorrect,
           aiFeedback: isCorrect
             ? `To'g'ri! ${q.explanation}`
-            : `Noto'g'ri. ${q.explanation}`,
+            : typeof selected === "number"
+            ? `Noto'g'ri tanlov. To'g'ri variant: ${String.fromCharCode(65 + q.correctIndex)}. ${q.explanation}`
+            : `Tanlanmadi. To'g'ri variant: ${String.fromCharCode(65 + q.correctIndex)}.`,
         });
       }
     }
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return {
-      score,
-      total,
-      results,
-      summary: `AI tekshiruvi yakunlandi: ${score} / ${total}.`,
-    };
-  }
+  const pct = total > 0 ? Math.round((score / total) * 100) : 0;
+  const summary = `Natija: ${score}/${total} (${pct}%). ${
+    pct >= 80
+      ? "A'lo darajada matn tushunish ko'rsatkichi!"
+      : pct >= 50
+      ? "Yaxshi natija, asosiy fikrlarni ajratishga ko'proq e'tibor bering."
+      : "Matnni qayta ko'rib chiqish va nozik nuqtalarni tahlil qilish tavsiya etiladi."
+  }`;
 
-  try {
-    // Use Gemini to grade open-ended answers accurately when present
-    const openItems = results.filter((r) => {
-      const q = passages[r.passageIndex]?.questions?.[r.questionIndex];
-      return (
-        q?.type === "question" ||
-        !Array.isArray(q?.options) ||
-        q?.options.length === 0
-      );
-    });
-
-    if (openItems.length > 0) {
-      const payloadForAi = openItems.slice(0, 30).map((r) => {
-        const p = passages[r.passageIndex];
-        const q = p?.questions?.[r.questionIndex];
-        return {
-          pIdx: r.passageIndex,
-          qIdx: r.questionIndex,
-          passageSnippet: (p?.text || "").slice(0, 500),
-          question: q?.question || "",
-          modelAnswer: q?.modelAnswer || q?.explanation || "",
-          studentAnswer: r.textAnswer || "",
-        };
-      });
-
-      const prompt = `Grade these open-ended English reading answers fairly against the passage and modelAnswer.
-Return ONLY JSON array: [{"pIdx":0,"qIdx":0,"isCorrect":true,"feedback":"short Uzbek feedback"}]
-Items: ${JSON.stringify(payloadForAi)}`;
-
-      const res = await fetch(
-        `[https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$](https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$){encodeURIComponent(
-          apiKey
-        )}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              temperature: 0.3,
-              responseMimeType: "application/json",
-            },
-          }),
-        }
-      );
-
-      if (res.ok) {
-        const data = (await res.json()) as {
-          candidates?: Array<{
-            content?: { parts?: Array<{ text?: string }> };
-          }>;
-        };
-        const raw =
-          data.candidates?.[0]?.content?.parts?.[0]?.text
-            ?.replace(/^```json\s*/i, "")
-            .replace(/\s*```$/i, "")
-            .trim() || "[]";
-        const parsedGrades = JSON.parse(raw) as Array<{
-          pIdx: number;
-          qIdx: number;
-          isCorrect: boolean;
-          feedback?: string;
-        }>;
-
-        if (Array.isArray(parsedGrades) && parsedGrades.length > 0) {
-          for (const g of parsedGrades) {
-            const target = results.find(
-              (item) =>
-                item.passageIndex === g.pIdx && item.questionIndex === g.qIdx
-            );
-            if (target) {
-              target.isCorrect = Boolean(g.isCorrect);
-              if (g.feedback && g.feedback.trim()) {
-                target.aiFeedback = g.feedback.trim();
-              }
-            }
-          }
-          score = results.filter((item) => item.isCorrect).length;
-        }
-      }
-    }
-  } catch {
-    // Keep rule + keyword grading above
-  }
-
-  return {
-    score,
-    total,
-    results,
-    summary: `AI tekshiruvi: ${score} / ${total} to'g'ri javob.`,
-  };
+  return { score, total, results, summary };
 }

@@ -112,10 +112,11 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
   async function handleCreateTest(e: React.FormEvent) {
     e.preventDefault();
     setCreating(true);
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
     try {
       const jobId = `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       setGenProgress({ percent: 0, completed: 0, total: questionCount, label: `Boshlanmoqda... (0/${questionCount} · 0%)` });
-      const pollTimer = setInterval(async () => {
+      pollTimer = setInterval(async () => {
         try {
           const pRes = await fetch(`/api/tests/progress?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store" });
           if (pRes.ok) {
@@ -166,9 +167,8 @@ const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = (
     } catch {
       notifyApi.show("Test yaratishda tarmoq xatoligi.");
     } finally {
-      clearInterval(pollTimer);
+      if (pollTimer) clearInterval(pollTimer);
       setCreating(false);
-      setGenProgress(null);
       setGenProgress(null);
     }
   }

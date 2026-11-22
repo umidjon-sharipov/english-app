@@ -7,6 +7,15 @@ import {
 export { GAME_TYPES };
 export type { GameCatalogItem, GameRoundQuestion };
 
+const PREFERRED_GAME_MODELS = [
+  "gemini-3.6-flash",
+  "gemini-3.8-flash",
+  "gemini-3.5-flash",
+  "gemini-3.1-flash-lite",
+  "gemini-flash-latest",
+  "gemma-4-31b-it",
+];
+
 const UNIQUE_STARTERS = [
   "morning standup",
   "API timeout bug",
@@ -46,7 +55,7 @@ function buildFallbackRounds(params: {
       ];
       return {
         id: roundNum,
-        prompt: `Round ${roundNum} · Drag & drop word tiles to form a ${level} sentence about "${scenario}"${focus}:`,
+        prompt: `Round ${roundNum} · So'z kartalarini tartib bilan bosib to'g'ri ${level} gap tuzing:`,
         targetSentence: sentence,
         chunks: [parts[2], parts[3], parts[0], parts[1]],
         options: [
@@ -56,21 +65,41 @@ function buildFallbackRounds(params: {
           `Our team in ${topic} carefully ${scenario} handles.`,
         ],
         correctIndex: 0,
-        explanation: `Standard English word order places subject ("Our team") + verb ("handles") + object ("${scenario}") + adverb/prepositional phrase.`,
+        explanation: `Ingliz tilida odatiy so'z tartibi: Ega (Subject: Our team) + Kesim (Verb: handles) + To'ldiruvchi (Object: ${scenario}) + Hol (Adverb/Preposition).`,
+      };
+    }
+
+    if (gameType === "phrasal-match" || gameType === "synonym-duel" || gameType === "antonym-clash") {
+      const pairs: Array<{ term: string; match: string; dist1: string; dist2: string; dist3: string }> = [
+        { term: "Carry out", match: "Perform / Execute a task", dist1: "Delay indefinitely", dist2: "Cancel completely", dist3: "Forget about" },
+        { term: "Bring about", match: "Cause something to happen", dist1: "Prevent from happening", dist2: "Travel far away", dist3: "Refuse an offer" },
+        { term: "Break down", match: "Stop functioning / Analyze details", dist1: "Fix immediately", dist2: "Start moving fast", dist3: "Build a skyscraper" },
+        { term: "Put off", match: "Postpone to a later time", dist1: "Accelerate forward", dist2: "Wear new clothes", dist3: "Extinguish fire" },
+        { term: "Look into", match: "Investigate and examine", dist1: "Ignore deliberately", dist2: "Close the eyes", dist3: "Run away" },
+      ];
+      const p = pairs[i % pairs.length];
+      return {
+        id: roundNum,
+        prompt: `Round ${roundNum} · '${p.term}' kartasiga mos ma'no kartasini toping:`,
+        targetSentence: `${p.term} = ${p.match}`,
+        chunks: [p.term, p.match],
+        options: [p.match, p.dist1, p.dist2, p.dist3],
+        correctIndex: 0,
+        explanation: `'${p.term}' iborasi '${p.match}' ma'nosini anglatadi.`,
       };
     }
 
     return {
       id: roundNum,
-      prompt: `Round ${roundNum} · ${gameType} (${level} · ${topic}${focus}) — Scenario: ${scenario}`,
+      prompt: `Round ${roundNum} · ${gameType} (${level} · ${topic}${focus}) — '${scenario}':`,
       options: [
-        `Best ${level} fit for "${scenario}" in ${topic}`,
-        `Opposite or mismatched option for "${scenario}"`,
-        `Unrelated phrase outside ${topic}`,
-        `Grammatically incorrect form for "${scenario}"`,
+        `Mos keladigan to'g'ri ifoda: "${scenario}" (${topic})`,
+        `Qarama-qarshi yoki noo'rin variant`,
+        `Boshqa mavzuga oid variant`,
+        `Grammatik jihatdan xato tuzilma`,
       ],
       correctIndex: 0,
-      explanation: `Option A fits "${scenario}" accurately for ${level} level and ${topic}.`,
+      explanation: `To'g'ri variant kontekst va darajaga to'liq mos keladi.`,
     };
   });
 }
@@ -170,29 +199,29 @@ export async function generateGameWithAi(params: {
   const gameMeta =
     GAME_TYPES.find((g) => g.id === params.gameType) || GAME_TYPES[0];
 
-  const prompt = `Generate EXACTLY ${params.questionCount} unique, non-repeating English learning game rounds for "${gameMeta.name}" (${gameMeta.description}).
-Topic: ${params.topic}
-CEFR Level: ${params.level}
-${params.customPrompt?.trim() ? `Custom focus: ${params.customPrompt.trim()}` : ""}
+  const prompt = `You are an educational game designer for English learners.
+Generate EXACTLY ${params.questionCount} unique, interactive rounds for the game: "${gameMeta.name}".
+Game mechanic: ${gameMeta.mechanic} (${gameMeta.description})
+Topic: ${params.topic} | CEFR Level: ${params.level}
+${params.customPrompt?.trim() ? `Specific Requirements: ${params.customPrompt.trim()}` : ""}
 
-IMPORTANT:
-- Every single one of the ${params.questionCount} items must be distinct and have a different sentence/word/phrase/context. Do NOT repeat the same item.
-- Return ONLY a raw JSON array of ${params.questionCount} objects (no markdown):
+Rules:
+1. Every round must be engaging, unique, and pedagogically sound.
+2. If sentence-scramble: provide "targetSentence" and 4-6 shuffled word "chunks".
+3. If matching: provide "chunks" with the pair items and 4 choices in "options" with "correctIndex" (0..3).
+4. Return ONLY a valid JSON array of objects without markdown:
 [
   {
-    "prompt": "Unique challenge or sentence clue",
-    "targetSentence": "Full correct sentence if sentence-scramble, otherwise omit",
-    "chunks": ["tile1", "tile2", "tile3", "tile4"],
-    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "prompt": "Task instruction or context clue",
+    "targetSentence": "Full target sentence if applicable",
+    "chunks": ["piece1", "piece2", "piece3", "piece4"],
+    "options": ["Correct Option", "Distractor 1", "Distractor 2", "Distractor 3"],
     "correctIndex": 0,
-    "explanation": "Concise explanation"
+    "explanation": "Brief explanation"
   }
 ]`;
 
-  const models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
-  let lastErr = "";
-
-  for (const model of models) {
+  for (const model of PREFERRED_GAME_MODELS) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 35000);
 
@@ -208,17 +237,14 @@ IMPORTANT:
           body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
             generationConfig: {
-              temperature: 0.85,
-              responseMimeType: "application/json",
+              temperature: 0.75,
+              maxOutputTokens: 8192,
             },
           }),
         }
       );
 
-      if (!res.ok) {
-        lastErr = `${model} -> HTTP ${res.status}`;
-        continue;
-      }
+      if (!res.ok) continue;
 
       const data = (await res.json()) as {
         candidates?: Array<{
@@ -226,26 +252,25 @@ IMPORTANT:
         }>;
       };
 
-      const rawText =
-        data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
-      if (!rawText) {
-        lastErr = `${model} -> bo'sh javob`;
-        continue;
-      }
+      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+      if (!rawText) continue;
 
       const cleaned = rawText
-        .replace(/^```json\s*/i, "")
-        .replace(/^```\s*/i, "")
-        .replace(/\s*```$/i, "")
+        .replace(/```(?:json)?\s*/gi, "")
+        .replace(/```/g, "")
         .trim();
 
-      const parsed = JSON.parse(cleaned);
-      return {
-        rounds: normalizeRounds(parsed, params),
-        usedAi: true,
-      };
-    } catch (e) {
-      lastErr = e instanceof Error ? e.message : "AI xatosi";
+      const firstBracket = cleaned.indexOf("[");
+      const lastBracket = cleaned.lastIndexOf("]");
+      if (firstBracket !== -1 && lastBracket > firstBracket) {
+        const parsed = JSON.parse(cleaned.substring(firstBracket, lastBracket + 1));
+        return {
+          rounds: normalizeRounds(parsed, params),
+          usedAi: true,
+        };
+      }
+    } catch {
+      // try next model
     } finally {
       clearTimeout(timer);
     }
@@ -254,6 +279,6 @@ IMPORTANT:
   return {
     rounds: buildFallbackRounds(params),
     usedAi: false,
-    aiNote: lastErr || "Gemini API ulanmadi.",
+    aiNote: "Fallback generator ishga tushirildi.",
   };
 }
