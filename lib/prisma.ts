@@ -2,21 +2,14 @@ import { PrismaClient } from "@prisma/client";
 
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;
-  __englishStudioPrisma?: PrismaClient;
 };
 
-function createPrismaClient() {
-  return new PrismaClient({
-    log: ["error"],
-  });
-}
-
-export const prisma: PrismaClient =
-  globalForPrisma.__englishStudioPrisma ??
+export const prisma =
   globalForPrisma.prisma ??
-  createPrismaClient();
+  new PrismaClient({
+    log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
+  });
 
-globalForPrisma.__englishStudioPrisma = prisma;
-globalForPrisma.prisma = prisma;
-
-export const db = prisma;
+if (process.env.NODE_ENV !== "production") {
+  globalForPrisma.prisma = prisma;
+}
