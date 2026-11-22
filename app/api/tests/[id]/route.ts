@@ -257,20 +257,13 @@ export async function POST(
         ? Math.round(body.total)
         : existing.questionCount;
 
-    const existingPart = await db.testParticipant.findFirst({
-      where: { testId: id, userId },
+    await db.testParticipant.upsert({
+      where: {
+        testId_userId: { testId: id, userId },
+      },
+      update: { score, total, completedAt: new Date() },
+      create: { testId: id, userId, score, total, completedAt: new Date() },
     });
-
-    if (existingPart) {
-      await db.testParticipant.update({
-        where: { id: existingPart.id },
-        data: { score, total, completedAt: new Date() },
-      });
-    } else {
-      await db.testParticipant.create({
-        data: { testId: id, userId, score, total, completedAt: new Date() },
-      });
-    }
 
     return NextResponse.json({ ok: true, score, total });
   } catch (error) {

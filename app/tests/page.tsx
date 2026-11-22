@@ -1,23 +1,18 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-
-interface UserSummary {
-  id: string;
-  firstName: string;
-  lastName: string | null;
-  userName: string;
-}
+import { useRouter } from "next/navigation";
+import { useNotification } from "@/components/notification-provider";
+import { useTheme } from "@/components/theme-provider";
+import { UiModal } from "@/components/ui-modal";
 
 interface ParticipantItem {
   id: string;
   userId: string;
   score: number | null;
   total: number | null;
-  completedAt: string | null;
-  joinedAt: string;
-  user: UserSummary;
+  user: { firstName: string; lastName: string | null; userName: string };
 }
 
 interface TestRecord {
@@ -28,426 +23,531 @@ interface TestRecord {
   questionCount: number;
   status: "OPEN" | "CLOSED";
   maxParticipants: number | null;
-  startsAt: string | null;
-  endsAt: string | null;
-  designTheme: string | null;
-  allowParticipantAi?: boolean;
+  designStyle: string;
+  allowParticipantAi: boolean;
   creatorId: string;
-  creator: UserSummary;
+  creator: { firstName: string; lastName: string | null; userName: string };
   participants: ParticipantItem[];
-  createdAt: string;
 }
 
-const TOPICS = [
-  "Grammar & Tenses",
-  "Vocabulary & Collocations",
-  "IELTS Reading & Inference",
-  "Business & Workplace English",
-  "Everyday Conversation & Idioms",
-];
+export default function TestsStudioPage() {
+  const router = useRouter();
+const themeCtx = useTheme(); const theme = themeCtx.theme; const toggleTheme = () => themeCtx.setTheme(theme === "dark" ? "light" : "dark");
+  const notifyApi = useNotification();
 
-const LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"];
-
-export default function TestsHubPage() {
-  const [openTests, setOpenTests] = useState<TestRecord[]>([]);
-  const [allTestsForMerge, setAllTestsForMerge] = useState<TestRecord[]>([]);
+  const [tests, setTests] = useState<TestRecord[]>([]);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [founderMode, setFounderMode] = useState(true);
   const [loading, setLoading] = useState(true);
 
+  const [directId, setDirectId] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "OPEN" | "CLOSED">("ALL");
+  const [levelFilter, setLevelFilter] = useState<string>("ALL");
+
+  // Universal Modal for creating a new test
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [genProgress, setGenProgress] = useState<{ percent: number; completed: number; total: number; label: string } | null>(null);
+
   const [title, setTitle] = useState("");
-  const [topic, setTopic] = useState(TOPICS[0]);
+  const [topic, setTopic] = useState("Grammar & Tenses");
   const [level, setLevel] = useState("B1");
-  const [questionCount, setQuestionCount] = useState<number>(10);
-  const [allowParticipantAi, setAllowParticipantAi] = useState<boolean>(false);
-  const [customPrompt, setCustomPrompt] = useState<string>("");
+  const [questionCount, setQuestionCount] = useState(10);
+  const [customPrompt, setCustomPrompt] = useState("");
   const [status, setStatus] = useState<"OPEN" | "CLOSED">("OPEN");
-  const [maxParticipants, setMaxParticipants] = useState<string>("");
-  const [startsAt, setStartsAt] = useState<string>("");
-  const [endsAt, setEndsAt] = useState<string>("");
-  const [designTheme, setDesignTheme] = useState<"minimal" | "card" | "paper">("minimal");
-  const [mergeSelectedIds, setMergeSelectedIds] = useState<string[]>([]);
-  const [generating, setGenerating] = useState(false);
+  const [maxParticipants, setMaxParticipants] = useState("");
+  const [designStyle, setDesignStyle] = useState("Minimal");
+  const [startsAt, setStartsAt] = useState("");
+  const [endsAt, setEndsAt] = useState("");
+  const [allowParticipantAi, setAllowParticipantAi] = useState(false);
 
-  const [directTestId, setDirectTestId] = useState("");
-  const [uiTheme, setUiTheme] = useState<"dark" | "light">("dark");
-  const [founderMode, setFounderMode] = useState(true);
-  const [message, setMessage] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  const loadTests = useCallback(async () => {
+  const loadSessionAndTests = useCallback(async () => {
     try {
       setLoading(true);
-      const [openRes, allRes] = await Promise.all([
-        fetch("/api/tests", { cache: "no-store" }),
-        fetch("/api/tests?all=1", { cache: "no-store" }),
-      ]);
-      const openData = await openRes.json();
-      const allData = await allRes.json();
-
-      if (openRes.ok && Array.isArray(openData.tests)) {
-        setOpenTests(openData.tests);
+      const meRes = await fetch("/api/auth/me", { cache: "no-store" });
+      let uid: string | null = null;
+      if (meRes.ok) {
+        const meData = await meRes.json();
+        uid = meData?.user?.id ?? null;
+        setCurrentUserId(uid);
       }
-      if (allRes.ok && Array.isArray(allData.tests)) {
-        setAllTestsForMerge(allData.tests);
+
+      const res = await fetch("/api/tests?all=1", { cache: "no-store" });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.tests)) {
+        setTests(data.tests);
+      } else {
+        notifyApi.show(data.error || "Testlarni yuklashda xato.");
       }
     } catch {
-      setErrorMsg("Testlarni yuklashda xatolik yuz berdi.");
+      notifyApi.show("Tarmoq xatoligi.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [notifyApi]);
 
   useEffect(() => {
-    loadTests();
-  }, [loadTests]);
+    loadSessionAndTests();
+  }, [loadSessionAndTests]);
 
-  function toggleMergeId(id: string) {
-    setMergeSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-    );
-  }
+  const visibleTests = useMemo(() => {
+    return tests.filter((t) => {
+      const isCreator = Boolean(currentUserId && t.creatorId === currentUserId);
+      const canSeeClosed = founderMode && isCreator;
+      if (t.status === "CLOSED" && !canSeeClosed) return false;
 
-  async function handleCreateOrMergeTest(e: React.FormEvent) {
+      if (statusFilter !== "ALL" && t.status !== statusFilter) return false;
+      if (levelFilter !== "ALL" && t.level !== levelFilter) return false;
+
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const hay = `${t.title} ${t.topic} ${t.level} ${t.id} ${t.creator?.userName || ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [tests, currentUserId, founderMode, statusFilter, levelFilter, searchQuery]);
+
+  async function handleCreateTest(e: React.FormEvent) {
     e.preventDefault();
-    setMessage(null);
-    setErrorMsg(null);
-    setGenerating(true);
-
+    setCreating(true);
     try {
-      const parsedLimit =
-        maxParticipants.trim() === "" ? null : Number(maxParticipants);
-
+      const jobId = `gen_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      setGenProgress({ percent: 0, completed: 0, total: questionCount, label: `Boshlanmoqda... (0/${questionCount} · 0%)` });
+      const pollTimer = setInterval(async () => {
+        try {
+          const pRes = await fetch(`/api/tests/progress?jobId=${encodeURIComponent(jobId)}`, { cache: "no-store" });
+          if (pRes.ok) {
+            const pData = await pRes.json();
+            if (typeof pData.percent === "number") {
+              setGenProgress({
+                percent: pData.percent,
+                completed: pData.completed ?? 0,
+                total: pData.total ?? questionCount,
+                label: pData.statusText || `${pData.completed ?? 0}/${questionCount} · ${pData.percent}%`,
+              });
+            }
+          }
+        } catch {}
+      }, 600);
       const res = await fetch("/api/tests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          jobId,
           title: title.trim() || undefined,
           topic,
           level,
           questionCount,
-          useAi: true,
-          allowParticipantAi,
           customPrompt: customPrompt.trim() || undefined,
           status,
-          maxParticipants:
-            parsedLimit && Number.isFinite(parsedLimit) && parsedLimit > 0
-              ? Math.round(parsedLimit)
-              : null,
-          startsAt: startsAt || null,
-          endsAt: endsAt || null,
-          designTheme,
-          mergeTestIds: mergeSelectedIds.length >= 2 ? mergeSelectedIds : undefined,
+          maxParticipants: maxParticipants.trim() ? Number(maxParticipants) : undefined,
+          designStyle,
+          startsAt: startsAt || undefined,
+          endsAt: endsAt || undefined,
+          allowParticipantAi,
         }),
       });
-
       const data = await res.json();
       if (!res.ok) {
-        setErrorMsg(data.error || "Test yaratishda xatolik yuz berdi.");
+        notifyApi.show(data.error || "AI test yarata olmadi.");
         return;
       }
 
+      notifyApi.show("AI yangi test savollarini generatsiya qildi va saqladi.");
+      setCreateModalOpen(false);
       setTitle("");
       setCustomPrompt("");
-      setMergeSelectedIds([]);
-      setMessage(
-        `"${data.test.title}" yaratildi (Testda AI: ${
-          allowParticipantAi ? "ON" : "OFF"
-        }).`
-      );
-      await loadTests();
-    } catch {
-      setErrorMsg("Tarmoq xatoligi yuz berdi.");
-    } finally {
-      setGenerating(false);
-    }
-  }
-
-  async function handleToggleStatus(test: TestRecord) {
-    setMessage(null);
-    setErrorMsg(null);
-    const nextStatus = test.status === "OPEN" ? "CLOSED" : "OPEN";
-    try {
-      const res = await fetch(`/api/tests/${test.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: nextStatus }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setErrorMsg(data.error || "Holatni o'zgartirib bo'lmadi.");
-        return;
+      await loadSessionAndTests();
+      if (data?.test?.id) {
+        router.push(`/tests/${data.test.id}`);
       }
-      setMessage(`Holat ${nextStatus} ga o'zgartirildi.`);
-      await loadTests();
     } catch {
-      setErrorMsg("Holatni o'zgartirishda xato.");
+      notifyApi.show("Test yaratishda tarmoq xatoligi.");
+    } finally {
+      clearInterval(pollTimer);
+      setCreating(false);
+      setGenProgress(null);
+      setGenProgress(null);
     }
   }
 
   async function handleDeleteTest(id: string) {
-    setMessage(null);
-    setErrorMsg(null);
     try {
-      const res = await fetch(`/api/tests/${id}`, { method: "DELETE" });
+      const res = await fetch(`/api/tests/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
       const data = await res.json();
       if (!res.ok) {
-        setErrorMsg(data.error || "Testni o'chirib bo'lmadi.");
+        notifyApi.show(data.error || "Testni o'chirib bo'lmadi.");
         return;
       }
-      setMessage("Test o'chirildi.");
-      await loadTests();
+      setTests((prev) => prev.filter((t) => t.id !== id));
+      notifyApi.show("Test o'chirildi.");
     } catch {
-      setErrorMsg("O'chirishda xato.");
+      notifyApi.show("O'chirishda tarmoq xatoligi.");
     }
   }
 
-  const isLight = uiTheme === "light";
+  async function handleToggleStatus(t: TestRecord) {
+    const nextStatus = t.status === "OPEN" ? "CLOSED" : "OPEN";
+    const res = await fetch(`/api/tests/${encodeURIComponent(t.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: nextStatus }),
+    });
+    const data = await res.json();
+    if (res.ok && data.test) {
+      setTests((prev) => prev.map((item) => (item.id === t.id ? data.test : item)));
+      notifyApi.show(`Test holati ${nextStatus} ga o'zgartirildi.`);
+    } else {
+      notifyApi.show(data.error || "Holatni o'zgartirib bo'lmadi.");
+    }
+  }
+
+  function handleDirectOpen(e: React.FormEvent) {
+    e.preventDefault();
+    const clean = directId.trim();
+    if (!clean) return;
+    router.push(`/tests/${encodeURIComponent(clean)}`);
+  }
+
+  const isLight = theme === "light";
 
   return (
     <main
-      className={`min-h-screen p-6 md:p-10 transition-colors ${
+      className={`min-h-screen p-5 md:p-8 transition-colors ${
         isLight
-          ? "bg-stone-100 text-stone-900"
+          ? "bg-stone-100 text-neutral-900"
           : "bg-neutral-950 text-neutral-100"
       }`}
     >
-      <div className="max-w-6xl mx-auto space-y-8">
-        <div
-          className={`flex flex-wrap items-center justify-between gap-4 border-b pb-5 ${
-            isLight ? "border-stone-300" : "border-neutral-800"
-          }`}
-        >
+      <div className="max-w-6xl mx-auto space-y-6">
+        {/* Top Header */}
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">
-              Test Studio · Open &amp; ID Access
-            </h1>
-            <p
-              className={`text-sm mt-1 ${
-                isLight ? "text-stone-600" : "text-neutral-400"
-              }`}
-            >
-              Faqat OPEN testlar ro&apos;yxatda ko&apos;rinadi. Yopiq (CLOSED) testlarga ID
-              orqali /tests/[id] sahifasidan kiring.
+            <h1 className="text-2xl md:text-3xl font-bold">Test Studio</h1>
+            <p className="text-xs opacity-75 mt-1">
+              Founder o&apos;zining OPEN va CLOSED testlarini boshqaradi; barcha savollar 100% AI orqali yaratiladi.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2.5">
             <button
               type="button"
-              onClick={() => setUiTheme((t) => (t === "dark" ? "light" : "dark"))}
-              className={`px-3.5 py-2 rounded-lg text-xs font-medium border cursor-pointer ${
+              onClick={toggleTheme}
+              className={`px-3.5 py-2 rounded-xl text-xs font-medium border cursor-pointer ${
                 isLight
-                  ? "bg-white text-stone-900 border-stone-300"
-                  : "bg-neutral-900 text-neutral-200 border-neutral-700"
+                  ? "bg-white border-stone-300 text-neutral-900"
+                  : "bg-neutral-900 border-neutral-700 text-neutral-100"
               }`}
             >
-              Theme: {uiTheme.toUpperCase()}
+              Theme: {theme.toUpperCase()}
             </button>
+
             <button
               type="button"
               onClick={() => setFounderMode((f) => !f)}
-              className={`px-3.5 py-2 rounded-lg text-xs font-medium border cursor-pointer ${
+              className={`px-3.5 py-2 rounded-xl text-xs font-semibold border cursor-pointer ${
                 founderMode
-                  ? isLight
-                    ? "bg-stone-900 text-white border-stone-900"
-                    : "bg-white text-neutral-950 border-white"
+                  ? "bg-emerald-500 text-neutral-950 border-emerald-400"
                   : isLight
-                  ? "bg-white text-stone-700 border-stone-300"
-                  : "bg-neutral-900 text-neutral-400 border-neutral-800"
+                  ? "bg-white border-stone-300 text-neutral-700"
+                  : "bg-neutral-900 border-neutral-700 text-neutral-300"
               }`}
             >
-              {founderMode ? "Founder Control: ON" : "Participant View"}
+              Founder Control: {founderMode ? "ON" : "OFF"}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setCreateModalOpen(true)}
+              className="px-4 py-2 rounded-xl text-xs md:text-sm font-semibold bg-indigo-500 text-white hover:bg-indigo-400 shadow cursor-pointer"
+            >
+              + New Test
             </button>
           </div>
         </div>
 
-        <div
-          className={`rounded-xl border p-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 ${
+        {/* Direct Test ID Access Bar */}
+        <form
+          onSubmit={handleDirectOpen}
+          className={`rounded-2xl border p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
             isLight
-              ? "bg-white border-stone-300"
-              : "bg-neutral-900/70 border-neutral-800"
+              ? "bg-white border-stone-200"
+              : "bg-neutral-900/75 border-neutral-800"
           }`}
         >
-          <div className="text-xs">
-            <p className="font-semibold">Test ID orqali kirish</p>
-            <p className={isLight ? "text-stone-600" : "text-neutral-400"}>
-              Yopiq yoki boshqa testga ID orqali /tests/[id] sahifasidan kiring.
+          <div>
+            <p className="text-xs font-semibold">Test ID orqali kirish</p>
+            <p className="text-[11px] opacity-70">
+              Yopiq yoki boshqa test ID ni kiriting:
             </p>
           </div>
           <div className="flex items-center gap-2">
             <input
               type="text"
-              value={directTestId}
-              onChange={(e) => setDirectTestId(e.target.value)}
+              value={directId}
+              onChange={(e) => setDirectId(e.target.value)}
               placeholder="Test ID kiriting..."
-              className={`rounded-lg border px-3 py-2 text-xs w-56 ${
+              className={`rounded-xl border px-3 py-2 text-xs w-56 sm:w-64 ${
                 isLight
-                  ? "bg-stone-50 border-stone-300 text-stone-900"
-                  : "bg-neutral-950 border-neutral-700 text-white"
+                  ? "bg-stone-50 border-stone-300 text-neutral-900"
+                  : "bg-neutral-950 border-neutral-700 text-neutral-100"
               }`}
             />
-            {directTestId.trim() ? (
-              <Link
-                href={`/tests/${encodeURIComponent(directTestId.trim())}`}
-                className={`px-4 py-2 rounded-lg text-xs font-medium ${
-                  isLight ? "bg-stone-900 text-white" : "bg-white text-neutral-950"
+            <button
+              type="submit"
+              className={`px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer ${
+                isLight
+                  ? "bg-neutral-900 text-white"
+                  : "bg-white text-neutral-950"
+              }`}
+            >
+              Ochish
+            </button>
+          </div>
+        </form>
+
+        {/* Search & Filter Bar */}
+        <div
+          className={`rounded-2xl border p-4 flex flex-wrap items-center justify-between gap-3 ${
+            isLight
+              ? "bg-white border-stone-200"
+              : "bg-neutral-900/75 border-neutral-800"
+          }`}
+        >
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Nomi, mavzu, daraja yoki ID bo'yicha qidirish..."
+            className={`flex-1 min-w-[220px] rounded-xl border px-3.5 py-2 text-xs ${
+              isLight
+                ? "bg-stone-50 border-stone-300 text-neutral-900"
+                : "bg-neutral-950 border-neutral-700 text-neutral-100"
+            }`}
+          />
+
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            {(["ALL", "OPEN", "CLOSED"] as const).map((st) => (
+              <button
+                key={st}
+                type="button"
+                onClick={() => setStatusFilter(st)}
+                className={`px-3 py-1.5 rounded-lg border cursor-pointer ${
+                  statusFilter === st
+                    ? "bg-indigo-500 text-white border-indigo-400 font-semibold"
+                    : "border-neutral-700/60 opacity-75 hover:opacity-100"
                 }`}
               >
-                Ochish
-              </Link>
-            ) : (
-              <button
-                type="button"
-                disabled
-                className="px-4 py-2 rounded-lg text-xs font-medium opacity-40 border border-neutral-700"
-              >
-                Ochish
+                {st}
               </button>
-            )}
+            ))}
+
+            <select
+              value={levelFilter}
+              onChange={(e) => setLevelFilter(e.target.value)}
+              className={`rounded-lg border px-2.5 py-1.5 ${
+                isLight
+                  ? "bg-stone-50 border-stone-300 text-neutral-900"
+                  : "bg-neutral-950 border-neutral-700 text-neutral-100"
+              }`}
+            >
+              <option value="ALL">All Levels</option>
+              <option value="A1">A1</option>
+              <option value="A2">A2</option>
+              <option value="B1">B1</option>
+              <option value="B2">B2</option>
+              <option value="C1">C1</option>
+              <option value="C2">C2</option>
+            </select>
+
+            <button
+              type="button"
+              onClick={loadSessionAndTests}
+              className="px-3 py-1.5 rounded-lg border border-neutral-700/60 underline cursor-pointer"
+            >
+              Yangilash
+            </button>
           </div>
         </div>
 
-        {message && (
-          <div className="rounded-lg border border-emerald-600/50 bg-emerald-950/30 px-4 py-3 text-sm text-emerald-300">
-            {message}
+        {/* Tests List */}
+        <section className="space-y-3">
+          <div className="flex items-center justify-between text-xs opacity-75">
+            <span>Topilgan testlar: {visibleTests.length}</span>
+            <span>{founderMode ? "Founder yopiq (CLOSED) testlaringiz ham ko'rinadi" : "Faqat OPEN testlar"}</span>
           </div>
-        )}
-        {errorMsg && (
-          <div className="rounded-lg border border-red-600/50 bg-red-950/30 px-4 py-3 text-sm text-red-300">
-            {errorMsg}
-          </div>
-        )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <form
-            onSubmit={handleCreateOrMergeTest}
-            className={`lg:col-span-6 rounded-xl border p-5 space-y-4 ${
-              isLight
-                ? "bg-white border-stone-300"
-                : "bg-neutral-900/70 border-neutral-800"
-            }`}
-          >
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h2 className="text-lg font-medium">
-                {mergeSelectedIds.length >= 2
-                  ? `Testlarni Birlashma Qilish (${mergeSelectedIds.length} ta)`
-                  : "Yangi Test Yaratish"}
-              </h2>
-
+          {loading ? (
+            <p className="text-sm opacity-75">Testlar yuklanmoqda...</p>
+          ) : visibleTests.length === 0 ? (
+            <div
+              className={`rounded-2xl border p-8 text-center space-y-3 ${
+                isLight
+                  ? "bg-white border-stone-200"
+                  : "bg-neutral-900/60 border-neutral-800"
+              }`}
+            >
+              <p className="text-sm font-medium">Mos test topilmadi.</p>
               <button
                 type="button"
-                onClick={() => setAllowParticipantAi((v) => !v)}
-                className={`px-3 py-1 rounded-full text-xs font-medium border cursor-pointer ${
-                  allowParticipantAi
-                    ? "bg-emerald-500 text-neutral-950 border-emerald-400"
-                    : isLight
-                    ? "bg-stone-100 text-stone-700 border-stone-300"
-                    : "bg-neutral-950 text-neutral-400 border-neutral-700"
-                }`}
+                onClick={() => setCreateModalOpen(true)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-500 text-white cursor-pointer"
               >
-                Testda AI: {allowParticipantAi ? "ON" : "OFF"}
+                + New Test yaratish
               </button>
             </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {visibleTests.map((t) => {
+                const isCreator = Boolean(currentUserId && t.creatorId === currentUserId);
+                return (
+                  <div
+                    key={t.id}
+                    className={`rounded-2xl border p-5 flex flex-col justify-between gap-4 transition ${
+                      isLight
+                        ? "bg-white border-stone-200 shadow-xs"
+                        : "bg-neutral-900/80 border-neutral-800 hover:border-neutral-700"
+                    }`}
+                  >
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span
+                          className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full ${
+                            t.status === "OPEN"
+                              ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+                              : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                          }`}
+                        >
+                          {t.status}
+                        </span>
+                        <span className="text-[11px] font-mono opacity-60">{t.id}</span>
+                      </div>
 
+                      <h2 className="text-base font-bold">{t.title}</h2>
+                      <p className="text-xs opacity-75">
+                        {t.topic} · {t.level} · {t.questionCount} savol · Kirganlar:{" "}
+                        {t.participants?.length ?? 0}
+                      </p>
+                      <p className="text-[11px] opacity-60">
+                        Muallif: @{t.creator?.userName || "user"} · Dizayn: {t.designStyle}
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-neutral-800/60">
+                      <Link href={`/tests/${t.id}`} className={`px-4 py-1.5 rounded-xl text-xs font-semibold ${isLight ? "bg-neutral-900 text-white" : "bg-white text-neutral-950"}`}>
+                        Testni boshlash
+                      </Link>
+
+                      {founderMode && isCreator && (
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleStatus(t)}
+                            className="px-2.5 py-1.5 rounded-lg text-xs border border-indigo-400/40 text-indigo-300 cursor-pointer"
+                          >
+                            {t.status === "OPEN" ? "Yopish (CLOSED)" : "Ochish (OPEN)"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteTest(t.id)}
+                            className="px-2.5 py-1.5 rounded-lg text-xs border border-rose-500/50 text-rose-400 cursor-pointer"
+                          >
+                            O&apos;chirish
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {/* Universal Modal for Creating New Test */}
+        <UiModal open={createModalOpen} onClose={() => setCreateModalOpen(false)}
+          title="Yangi Test Yaratish (100% AI)"
+          subtitle="Savollar faqat AI tomonidan yaratiladi; AI xato qilsa test yaratilmaydi va xabar beriladi."
+        >
+          <form onSubmit={handleCreateTest} className="space-y-4 text-xs">
             <div>
-              <label className="block text-xs opacity-75 mb-1">Test nomi</label>
+              <label className="block opacity-75 mb-1">Test nomi (ixtiyoriy)</label>
               <input
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="Masalan: B1 Mixed Practice"
-                className={`w-full rounded-lg border px-3 py-2 text-sm ${
-                  isLight
-                    ? "bg-stone-50 border-stone-300 text-stone-900"
-                    : "bg-neutral-950 border-neutral-800 text-white"
-                }`}
+                className="w-full rounded-xl border border-neutral-700 bg-neutral-950 px-3 py-2"
               />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs opacity-75 mb-1">Mavzu</label>
-                <select
+                <label className="block opacity-75 mb-1">Mavzu</label>
+                <input
+                  type="text"
                   value={topic}
                   onChange={(e) => setTopic(e.target.value)}
-                  className={`w-full rounded-lg border px-3 py-2 text-sm ${
-                    isLight
-                      ? "bg-stone-50 border-stone-300 text-stone-900"
-                      : "bg-neutral-950 border-neutral-800 text-white"
-                  }`}
-                >
-                  {TOPICS.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
+                  className="w-full rounded-xl border border-neutral-700 bg-neutral-950 px-3 py-2"
+                />
               </div>
-
               <div>
-                <label className="block text-xs opacity-75 mb-1">Qiyinlik darajasi</label>
+                <label className="block opacity-75 mb-1">Qiyinlik darajasi</label>
                 <select
                   value={level}
                   onChange={(e) => setLevel(e.target.value)}
-                  className={`w-full rounded-lg border px-3 py-2 text-sm ${
-                    isLight
-                      ? "bg-stone-50 border-stone-300 text-stone-900"
-                      : "bg-neutral-950 border-neutral-800 text-white"
-                  }`}
+                  className="w-full rounded-xl border border-neutral-700 bg-neutral-950 px-3 py-2"
                 >
-                  {LEVELS.map((lvl) => (
-                    <option key={lvl} value={lvl}>
-                      {lvl}
-                    </option>
-                  ))}
+                  <option value="A1">A1</option>
+                  <option value="A2">A2</option>
+                  <option value="B1">B1</option>
+                  <option value="B2">B2</option>
+                  <option value="C1">C1</option>
+                  <option value="C2">C2</option>
                 </select>
               </div>
             </div>
 
             <div>
-              <div className="flex justify-between text-xs mb-1">
-                <span className="opacity-75">Savollar soni (5–100)</span>
-                <span className="font-semibold">{questionCount} ta</span>
-              </div>
+              <label className="block opacity-75 mb-1">
+                Savollar soni (5–100): <b>{questionCount} ta</b>
+              </label>
               <input
                 type="range"
                 min={5}
                 max={100}
                 value={questionCount}
                 onChange={(e) => setQuestionCount(Number(e.target.value))}
-                className="w-full cursor-pointer"
+                className="w-full"
               />
             </div>
 
             <div>
-              <label className="block text-xs opacity-75 mb-1">
-                Qo&apos;shimcha Prompt (mavzu va darajadan tashqari)
+              <label className="block opacity-75 mb-1">
+                Qo&apos;shimcha Prompt (ixtiyoriy)
               </label>
               <textarea
                 rows={2}
                 value={customPrompt}
                 onChange={(e) => setCustomPrompt(e.target.value)}
                 placeholder="Masalan: Focus on conditionals, phrasal verbs, and gap-fill practice..."
-                className={`w-full rounded-lg border px-3 py-2 text-xs ${
-                  isLight
-                    ? "bg-stone-50 border-stone-300 text-stone-900"
-                    : "bg-neutral-950 border-neutral-800 text-white"
-                }`}
+                className="w-full rounded-xl border border-neutral-700 bg-neutral-950 px-3 py-2"
               />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
-                <label className="block text-xs opacity-75 mb-1">Status</label>
+                <label className="block opacity-75 mb-1">Status</label>
                 <select
                   value={status}
                   onChange={(e) =>
                     setStatus(e.target.value === "CLOSED" ? "CLOSED" : "OPEN")
                   }
-                  className={`w-full rounded-lg border px-3 py-2 text-sm ${
-                    isLight
-                      ? "bg-stone-50 border-stone-300 text-stone-900"
-                      : "bg-neutral-950 border-neutral-800 text-white"
-                  }`}
+                  className="w-full rounded-xl border border-neutral-700 bg-neutral-950 px-3 py-2"
                 >
                   <option value="OPEN">OPEN (Ochiq)</option>
                   <option value="CLOSED">CLOSED (Yopiq)</option>
@@ -455,218 +555,93 @@ export default function TestsHubPage() {
               </div>
 
               <div>
-                <label className="block text-xs opacity-75 mb-1">Max qatnashuvchi</label>
+                <label className="block opacity-75 mb-1">Max qatnashuvchi</label>
                 <input
                   type="number"
                   min={1}
                   value={maxParticipants}
                   onChange={(e) => setMaxParticipants(e.target.value)}
                   placeholder="Cheklovsiz"
-                  className={`w-full rounded-lg border px-3 py-2 text-sm ${
-                    isLight
-                      ? "bg-stone-50 border-stone-300 text-stone-900"
-                      : "bg-neutral-950 border-neutral-800 text-white"
-                  }`}
+                  className="w-full rounded-xl border border-neutral-700 bg-neutral-950 px-3 py-2"
                 />
               </div>
 
               <div>
-                <label className="block text-xs opacity-75 mb-1">Test dizayni</label>
+                <label className="block opacity-75 mb-1">Test dizayni</label>
                 <select
-                  value={designTheme}
-                  onChange={(e) =>
-                    setDesignTheme(e.target.value as "minimal" | "card" | "paper")
-                  }
-                  className={`w-full rounded-lg border px-3 py-2 text-sm ${
-                    isLight
-                      ? "bg-stone-50 border-stone-300 text-stone-900"
-                      : "bg-neutral-950 border-neutral-800 text-white"
-                  }`}
+                  value={designStyle}
+                  onChange={(e) => setDesignStyle(e.target.value)}
+                  className="w-full rounded-xl border border-neutral-700 bg-neutral-950 px-3 py-2"
                 >
-                  <option value="minimal">Minimal</option>
-                  <option value="card">Card</option>
-                  <option value="paper">Paper</option>
+                  <option value="Minimal">Minimal</option>
+                  <option value="Academic">Academic</option>
+                  <option value="Focus">Focus</option>
                 </select>
               </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs opacity-75 mb-1">
-                  Boshlanish vaqti (ixtiyoriy)
-                </label>
+                <label className="block opacity-75 mb-1">Boshlanish vaqti</label>
                 <input
                   type="datetime-local"
                   value={startsAt}
                   onChange={(e) => setStartsAt(e.target.value)}
-                  className={`w-full rounded-lg border px-3 py-2 text-xs ${
-                    isLight
-                      ? "bg-stone-50 border-stone-300 text-stone-900"
-                      : "bg-neutral-950 border-neutral-800 text-white"
-                  }`}
+                  className="w-full rounded-xl border border-neutral-700 bg-neutral-950 px-3 py-2"
                 />
               </div>
-
               <div>
-                <label className="block text-xs opacity-75 mb-1">
-                  Tugash vaqti (ixtiyoriy)
-                </label>
+                <label className="block opacity-75 mb-1">Tugash vaqti</label>
                 <input
                   type="datetime-local"
                   value={endsAt}
                   onChange={(e) => setEndsAt(e.target.value)}
-                  className={`w-full rounded-lg border px-3 py-2 text-xs ${
-                    isLight
-                      ? "bg-stone-50 border-stone-300 text-stone-900"
-                      : "bg-neutral-950 border-neutral-800 text-white"
-                  }`}
+                  className="w-full rounded-xl border border-neutral-700 bg-neutral-950 px-3 py-2"
                 />
               </div>
             </div>
 
-            {allTestsForMerge.length >= 2 && (
-              <div className="pt-2 border-t border-neutral-800/60">
-                <p className="text-xs font-medium mb-2">
-                  2–3+ testni qo&apos;shib bitta test qilish (ixtiyoriy):
-                </p>
-                <div className="flex flex-wrap gap-2 max-h-28 overflow-y-auto">
-                  {allTestsForMerge.map((mt) => {
-                    const checked = mergeSelectedIds.includes(mt.id);
-                    return (
-                      <button
-                        key={mt.id}
-                        type="button"
-                        onClick={() => toggleMergeId(mt.id)}
-                        className={`px-2.5 py-1 rounded text-xs border cursor-pointer ${
-                          checked
-                            ? "bg-emerald-500 text-neutral-950 border-emerald-400 font-medium"
-                            : "border-neutral-700 opacity-80"
-                        }`}
-                      >
-                        {checked ? "✓ " : "+ "}
-                        {mt.title} ({mt.questionCount})
-                      </button>
-                    );
-                  })}
-                </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={allowParticipantAi}
+                onChange={(e) => setAllowParticipantAi(e.target.checked)}
+              />
+              <span>Qatnashuvchilar uchun AI tushuntirish yordamchisini yoqish</span>
+            </label>
+
+            {creating && (
+            <div className="rounded-xl border border-indigo-500/40 bg-neutral-900/90 p-3 space-y-2">
+              <div className="flex items-center justify-between text-xs font-medium text-neutral-200">
+                <span className="truncate pr-2">{genProgress ? genProgress.label : `AI savol tuzmoqda... (0/${questionCount} · 0%)`}</span>
+                <span className="shrink-0 font-bold text-indigo-400">{genProgress ? genProgress.percent : 0}%</span>
               </div>
-            )}
-
-            <button
-              type="submit"
-              disabled={generating}
-              className={`w-full rounded-lg font-medium py-2.5 text-sm transition cursor-pointer disabled:opacity-50 ${
-                isLight
-                  ? "bg-stone-900 text-white hover:bg-stone-800"
-                  : "bg-white text-neutral-950 hover:bg-neutral-200"
-              }`}
-            >
-              {generating ? "AI generatsiya qilmoqda..." : "Test Yaratish"}
-            </button>
-          </form>
-
-          <div
-            className={`lg:col-span-6 rounded-xl border p-5 space-y-4 ${
-              isLight
-                ? "bg-white border-stone-300"
-                : "bg-neutral-900/70 border-neutral-800"
-            }`}
-          >
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-medium">
-                Ochiq (OPEN) Testlar ({openTests.length})
-              </h2>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-800">
+                <div
+                  className="h-full bg-indigo-500 transition-all duration-300"
+                  style={{ width: `${Math.min(100, Math.max(3, genProgress ? genProgress.percent : 3))}%` }}
+                />
+              </div>
+            </div>
+          )}
+          <div className="flex justify-end gap-2 pt-3 border-t border-neutral-800">
               <button
                 type="button"
-                onClick={loadTests}
-                className="text-xs underline opacity-75 hover:opacity-100 cursor-pointer"
+                onClick={() => setCreateModalOpen(false)}
+                className="px-4 py-2 rounded-xl border border-neutral-700 cursor-pointer"
               >
-                Yangilash
+                Bekor qilish
+              </button>
+              <button
+                type="submit"
+                disabled={creating}
+                className="px-5 py-2 rounded-xl font-semibold bg-white text-neutral-950 cursor-pointer disabled:opacity-50"
+              >
+                {creating ? "AI savol tuzmoqda..." : "AI bilan Test Yaratish"}
               </button>
             </div>
-
-            {loading ? (
-              <p className="text-sm opacity-70">Yuklanmoqda...</p>
-            ) : openTests.length === 0 ? (
-              <p className="text-sm opacity-70">
-                Hozircha OPEN test yo&apos;q. Yangi OPEN test yarating yoki ID orqali /tests/[id] ga kiring.
-              </p>
-            ) : (
-              <div className="space-y-3 max-h-[540px] overflow-y-auto pr-1">
-                {openTests.map((t) => {
-                  const pCount = t.participants?.length ?? 0;
-                  const limitStr =
-                    t.maxParticipants !== null && t.maxParticipants !== undefined
-                      ? `${pCount}/${t.maxParticipants}`
-                      : `${pCount}/∞`;
-
-                  return (
-                    <div
-                      key={t.id}
-                      className={`rounded-lg border p-4 space-y-2 ${
-                        isLight
-                          ? "bg-stone-50 border-stone-200"
-                          : "bg-neutral-950/70 border-neutral-800"
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <Link href={`/tests/${t.id}`} className="font-medium hover:underline">
-                              {t.title}
-                            </Link>
-                            <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-600/40">
-                              OPEN
-                            </span>
-                            <span className="text-[11px] px-2 py-0.5 rounded-full border border-neutral-700 opacity-80">
-                              AI: {t.allowParticipantAi ? "ON" : "OFF"}
-                            </span>
-                          </div>
-                          <p className="text-xs opacity-75 mt-1">
-                            {t.topic} · {t.level} · {t.questionCount} savol · Qatnashuvchilar:{" "}
-                            {limitStr}
-                          </p>
-                          <p className="text-[11px] opacity-60 mt-0.5">
-                            ID: <code className="select-all">{t.id}</code>
-                          </p>
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Link
-                            href={`/tests/${t.id}`}
-                            className={`px-3 py-1.5 rounded-md text-xs font-medium ${
-                              isLight ? "bg-stone-900 text-white" : "bg-white text-neutral-950"
-                            }`}
-                          >
-                            Testga kirish
-                          </Link>
-                          {founderMode && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => handleToggleStatus(t)}
-                                className="px-2.5 py-1.5 rounded-md text-xs border border-neutral-600 cursor-pointer"
-                              >
-                                Yopish (CLOSED)
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteTest(t.id)}
-                                className="px-2.5 py-1.5 rounded-md text-xs text-rose-400 hover:bg-rose-950/40 cursor-pointer"
-                              >
-                                O&apos;chirish
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
+          </form>
+        </UiModal>
       </div>
     </main>
   );

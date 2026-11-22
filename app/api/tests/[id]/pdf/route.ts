@@ -3,20 +3,9 @@ import { prisma } from "@/lib/prisma";
 
 const db = prisma as typeof prisma & { test: any };
 
-interface PdfQuestion {
-  id?: number;
-  question: string;
-  options: string[];
-}
-
-function pdfSafeText(input: string): string {
-  const ascii = input
-    .replace(/[\u2018\u2019]/g, "'")
-    .replace(/[\u201C\u201D]/g, '"')
-    .replace(/[\u2013\u2014]/g, "-")
-    .replace(/\u2026/g, "...")
-    .replace(/[^\x20-\x7E]/g, " ");
-  return ascii
+function escapePdfText(input: string): string {
+  return input
+    .replace(/[^\x20-\x7E]/g, " ")
     .replace(/\\/g, "\\\\")
     .replace(/\(/g, "\\(")
     .replace(/\)/g, "\\)");
@@ -28,11 +17,12 @@ function wrapLine(text: string, maxChars: number): string[] {
   const lines: string[] = [];
   let current = "";
   for (const w of words) {
-    const candidate = current ? `${current} ${w}` : w;
-    if (candidate.length <= maxChars) {
-      current = candidate;
+    if (!current) {
+      current = w;
+    } else if ((current + " " + w).length <= maxChars) {
+      current += " " + w;
     } else {
-      if (current) lines.push(current);
+      lines.push(current);
       current = w;
     }
   }
@@ -40,188 +30,213 @@ function wrapLine(text: string, maxChars: number): string[] {
   return lines;
 }
 
-function buildPdfBinary(params: {
+function buildAcademicPdfBytes(params: {
   title: string;
   subtitle: string;
-  headerLines: string[];
-  bgIconStyle: string;
-  questions: PdfQuestion[];
-}): Buffer {
-  const { title, subtitle, headerLines, bgIconStyle, questions } = params;
+  customHeader: string;
+  blankLines: number;
+  bgStyle: string;
+  questions: Array<{
+    question?: string;
+    options?: string[];
+  }>;
+}): Uint8Array {
   const pageWidth = 595;
   const pageHeight = 842;
-  const marginX = 48;
-  const topY = 790;
+  const marginX = 46;
+  const topY = 796;
   const bottomY = 56;
 
   const pages: string[][] = [];
-  let ops: string[] = [];
+  let curOps: string[] = [];
+  let y = topY;
 
-  const drawBackgroundPattern = (targetOps: string[]) => {
-    if (!bgIconStyle || bgIconStyle === "none") return;
-    targetOps.push("q");
-    targetOps.push("0.88 0.90 0.93 RG");
-    targetOps.push("0.7 w");
+  function drawBackground(ops: string[]) {
+    // Clean subtle border frame
+    ops.push("0.78 0.80 0.84 RG");
+    ops.push("0.8 w");
+    ops.push(`${marginX - 10} 36 ${pageWidth - (marginX - 10) * 2} ${pageHeight - 72} re S`);
 
-    if (bgIconStyle === "grid") {
-      for (let x = 40; x < pageWidth - 30; x += 44) {
-        targetOps.push(`${x} 40 m ${x} ${pageHeight - 40} l S`);
+    if (params.bgStyle === "grid") {
+      ops.push("0.92 0.93 0.95 RG");
+      ops.push("0.4 w");
+      for (let gx = marginX; gx <= pageWidth - marginX; gx += 32) {
+        ops.push(`${gx} 44 m ${gx} ${pageHeight - 44} l S`);
       }
-      for (let y = 40; y < pageHeight - 30; y += 44) {
-        targetOps.push(`40 ${y} m ${pageWidth - 40} ${y} l S`);
+      for (let gy = 48; gy <= pageHeight - 48; gy += 32) {
+        ops.push(`${marginX} ${gy} m ${pageWidth - marginX} ${gy} l S`);
       }
-    } else if (bgIconStyle === "stars") {
-      for (let y = 90; y < pageHeight - 60; y += 95) {
-        for (let x = 75; x < pageWidth - 60; x += 110) {
-          targetOps.push(`${x - 6} ${y} m ${x + 6} ${y} l S`);
-          targetOps.push(`${x} ${y - 6} m ${x} ${y + 6} l S`);
-          targetOps.push(`${x - 4} ${y - 4} m ${x + 4} ${y + 4} l S`);
-          targetOps.push(`${x - 4} ${y + 4} m ${x + 4} ${y - 4} l S`);
-        }
+    } else if (params.bgStyle === "lines") {
+      ops.push("0.91 0.92 0.95 RG");
+      ops.push("0.45 w");
+      for (let ly = 80; ly <= pageHeight - 120; ly += 24) {
+        ops.push(`${marginX} ${ly} m ${pageWidth - marginX} ${ly} l S`);
       }
-    } else if (bgIconStyle === "books") {
-      for (let y = 100; y < pageHeight - 70; y += 110) {
-        for (let x = 80; x < pageWidth - 70; x += 120) {
-          targetOps.push(`${x - 10} ${y - 7} 20 14 re S`);
-          targetOps.push(`${x} ${y - 7} m ${x} ${y + 7} l S`);
-        }
-      }
-    } else if (bgIconStyle === "waves") {
-      for (let y = 85; y < pageHeight - 50; y += 85) {
-        targetOps.push(`40 ${y} m 190 ${y + 8} 340 ${y - 8} 555 ${y} c S`);
-      }
+    } else if (params.bgStyle === "watermark") {
+      ops.push("BT /F1 38 Tf 0.93 0.94 0.96 rg");
+      ops.push(`160 390 Td (${escapePdfText("ASSESSMENT SHEET")}) Tj ET`);
     }
-
-    targetOps.push("Q");
-  };
-
-  let cursorY = topY;
-
-  const startNewPage = () => {
-    ops = [];
-    drawBackgroundPattern(ops);
-    cursorY = topY;
-  };
-
-  const ensureSpace = (needed: number) => {
-    if (cursorY - needed < bottomY) {
-      pages.push(ops);
-      startNewPage();
-    }
-  };
-
-  startNewPage();
-
-  ops.push("BT");
-  ops.push("/F2 18 Tf");
-  ops.push(`1 0 0 1 ${marginX} ${cursorY} Tm`);
-  ops.push(`(${pdfSafeText(title)}) Tj`);
-  ops.push("ET");
-  cursorY -= 22;
-
-  ops.push("BT");
-  ops.push("/F1 10 Tf");
-  ops.push(`1 0 0 1 ${marginX} ${cursorY} Tm`);
-  ops.push(`(${pdfSafeText(subtitle)}) Tj`);
-  ops.push("ET");
-  cursorY -= 22;
-
-  for (const hLine of headerLines) {
-    ensureSpace(20);
-    ops.push("BT");
-    ops.push("/F1 10 Tf");
-    ops.push(`1 0 0 1 ${marginX} ${cursorY} Tm`);
-    ops.push(`(${pdfSafeText(hLine)}) Tj`);
-    ops.push("ET");
-    cursorY -= 18;
   }
 
-  cursorY -= 8;
-  ops.push(`${marginX} ${cursorY} m ${pageWidth - marginX} ${cursorY} l S`);
-  cursorY -= 22;
-
-  questions.forEach((q, idx) => {
-    const qLines = wrapLine(`${idx + 1}. ${q.question}`, 84);
-    ensureSpace(qLines.length * 14 + (q.options?.length || 4) * 14 + 14);
-
-    for (const ql of qLines) {
-      ops.push("BT");
-      ops.push("/F2 11 Tf");
-      ops.push(`1 0 0 1 ${marginX} ${cursorY} Tm`);
-      ops.push(`(${pdfSafeText(ql)}) Tj`);
-      ops.push("ET");
-      cursorY -= 14;
+  function startNewPage(isFirst: boolean) {
+    if (curOps.length > 0) {
+      pages.push(curOps);
     }
+    curOps = [];
+    drawBackground(curOps);
+    y = topY;
 
-    const opts = Array.isArray(q.options) ? q.options : [];
-    opts.forEach((opt, oIdx) => {
+    if (isFirst) {
+      if (params.customHeader) {
+        curOps.push("BT /F2 9 Tf 0.35 0.38 0.45 rg");
+        curOps.push(`${marginX} ${y} Td (${escapePdfText(params.customHeader)}) Tj ET`);
+        y -= 16;
+      }
+
+      curOps.push("BT /F2 17 Tf 0.08 0.09 0.12 rg");
+      curOps.push(`${marginX} ${y} Td (${escapePdfText(params.title)}) Tj ET`);
+      y -= 18;
+
+      curOps.push("BT /F1 10 Tf 0.32 0.35 0.42 rg");
+      curOps.push(`${marginX} ${y} Td (${escapePdfText(params.subtitle)}) Tj ET`);
+      y -= 18;
+
+      curOps.push(
+        "BT /F1 10 Tf 0.12 0.14 0.18 rg " +
+          `${marginX} ${y} Td (${escapePdfText(
+            "Student: ________________________   Date: ______________   Score: _____ / _____"
+          )}) Tj ET`
+      );
+      y -= 16;
+
+      for (let b = 0; b < params.blankLines; b++) {
+        curOps.push(
+          `BT /F1 10 Tf 0.35 0.38 0.44 rg ${marginX} ${y} Td (${escapePdfText(
+            "________________________________________________________________________"
+          )}) Tj ET`
+        );
+        y -= 16;
+      }
+
+      curOps.push("0.25 0.28 0.34 RG 1 w");
+      curOps.push(`${marginX} ${y} m ${pageWidth - marginX} ${y} l S`);
+      y -= 20;
+    }
+  }
+
+  startNewPage(true);
+
+  params.questions.forEach((q, idx) => {
+    const qLines = wrapLine(`${idx + 1}. ${q.question || ""}`, 84);
+    const optLines: string[] = [];
+    (q.options || []).forEach((opt, oIdx) => {
       const letter = String.fromCharCode(65 + oIdx);
-      const optLines = wrapLine(`   ${letter}) ${opt}`, 88);
-      for (const ol of optLines) {
-        ops.push("BT");
-        ops.push("/F1 10 Tf");
-        ops.push(`1 0 0 1 ${marginX + 8} ${cursorY} Tm`);
-        ops.push(`(${pdfSafeText(ol)}) Tj`);
-        ops.push("ET");
-        cursorY -= 13;
+      for (const wl of wrapLine(`   ${letter}) ${opt}`, 82)) {
+        optLines.push(wl);
       }
     });
 
-    cursorY -= 10;
+    const neededHeight = (qLines.length + optLines.length) * 14 + 14;
+    if (y - neededHeight < bottomY) {
+      startNewPage(false);
+    }
+
+    for (const ql of qLines) {
+      curOps.push("BT /F2 10.5 Tf 0.09 0.10 0.13 rg");
+      curOps.push(`${marginX} ${y} Td (${escapePdfText(ql)}) Tj ET`);
+      y -= 14;
+    }
+
+    for (const ol of optLines) {
+      curOps.push("BT /F1 10 Tf 0.20 0.22 0.27 rg");
+      curOps.push(`${marginX} ${y} Td (${escapePdfText(ol)}) Tj ET`);
+      y -= 13.5;
+    }
+
+    y -= 10;
   });
 
-  pages.push(ops);
+  if (curOps.length > 0) {
+    pages.push(curOps);
+  }
 
+  // Assemble valid PDF 1.4 binary
   const objects: string[] = [];
-  objects.push("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+  const catalogId = 1;
+  const pagesId = 2;
+  const fontRegularId = 3;
+  const fontBoldId = 4;
 
-  const pageObjStart = 5;
-  const kidsRefs: string[] = [];
-  for (let i = 0; i < pages.length; i++) {
-    const pageObjNum = pageObjStart + i * 2;
-    kidsRefs.push(`${pageObjNum} 0 R`);
-  }
-
-  objects.push(
-    `2 0 obj\n<< /Type /Pages /Kids [${kidsRefs.join(" ")}] /Count ${pages.length} >>\nendobj\n`
-  );
-  objects.push(
-    "3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
-  );
-  objects.push(
-    "4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\nendobj\n"
-  );
+  const pageObjIds: number[] = [];
+  const contentObjIds: number[] = [];
+  let nextId = 5;
 
   for (let i = 0; i < pages.length; i++) {
-    const pageObjNum = pageObjStart + i * 2;
-    const contentObjNum = pageObjNum + 1;
-    const streamData = pages[i].join("\n") + "\n";
-    const byteLen = Buffer.byteLength(streamData, "latin1");
-
-    objects.push(
-      `${pageObjNum} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${contentObjNum} 0 R >>\nendobj\n`
-    );
-    objects.push(
-      `${contentObjNum} 0 obj\n<< /Length ${byteLen} >>\nstream\n${streamData}endstream\nendobj\n`
-    );
+    pageObjIds.push(nextId++);
+    contentObjIds.push(nextId++);
   }
+
+  objects[catalogId] = `${catalogId} 0 obj
+<< /Type /Catalog /Pages ${pagesId} 0 R >>
+endobj
+`;
+  objects[pagesId] = `${pagesId} 0 obj
+<< /Type /Pages /Kids [${pageObjIds
+    .map((id) => `${id} 0 R`)
+    .join(" ")}] /Count ${pageObjIds.length} >>
+endobj
+`;
+  objects[fontRegularId] = `${fontRegularId} 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+`;
+  objects[fontBoldId] = `${fontBoldId} 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+`;
+
+  pages.forEach((ops, idx) => {
+    const streamStr = ops.join("\n");
+    const contentId = contentObjIds[idx];
+    const pageId = pageObjIds[idx];
+
+    objects[contentId] =
+      `${contentId} 0 obj
+<< /Length ${Buffer.byteLength(streamStr, "utf8")} >>
+stream
+` +
+      `${streamStr}
+endstream
+endobj
+`;
+
+    objects[pageId] =
+      `${pageId} 0 obj
+<< /Type /Page /Parent ${pagesId} 0 R ` +
+      `/MediaBox [0 0 ${pageWidth} ${pageHeight}] ` +
+      `/Resources << /Font << /F1 ${fontRegularId} 0 R /F2 ${fontBoldId} 0 R >> >> ` +
+      `/Contents ${contentId} 0 R >>
+endobj
+`;
+  });
 
   let pdf = "%PDF-1.4\n";
   const offsets: number[] = [0];
-  for (const obj of objects) {
-    offsets.push(Buffer.byteLength(pdf, "latin1"));
-    pdf += obj;
+
+  for (let i = 1; i < objects.length; i++) {
+    offsets[i] = Buffer.byteLength(pdf, "utf8");
+    pdf += objects[i];
   }
 
-  const xrefStart = Buffer.byteLength(pdf, "latin1");
-  pdf += `xref\n0 ${objects.length + 1}\n`;
+  const xrefStart = Buffer.byteLength(pdf, "utf8");
+  pdf += `xref\n0 ${objects.length}\n`;
   pdf += "0000000000 65535 f \n";
-  for (let i = 1; i < offsets.length; i++) {
+  for (let i = 1; i < objects.length; i++) {
     pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
   }
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`;
+  pdf += `trailer\n<< /Size ${objects.length} /Root ${catalogId} 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
 
-  return Buffer.from(pdf, "latin1");
+  return new TextEncoder().encode(pdf);
 }
 
 export async function GET(
@@ -230,69 +245,37 @@ export async function GET(
 ) {
   try {
     const { id } = await context.params;
-    const { searchParams } = new URL(req.url);
-    const bgIconStyle = searchParams.get("bg") || "none";
-    const blankLinesCount = Math.min(
-      5,
-      Math.max(0, Number(searchParams.get("blanks") || "2") || 0)
-    );
-    const customHeader = (searchParams.get("header") || "").trim();
-
     const test = await db.test.findUnique({ where: { id } });
     if (!test) {
       return NextResponse.json({ error: "Test topilmadi." }, { status: 404 });
     }
 
-    const questions: PdfQuestion[] = Array.isArray(test.questionsJson)
-      ? test.questionsJson
-      : [];
+    const { searchParams } = new URL(req.url);
+    const bgStyle = searchParams.get("bg") || "none";
+    const blankLines = Math.min(4, Math.max(0, Number(searchParams.get("blanks") || 0)));
+    const customHeader = (searchParams.get("header") || "").trim();
 
-    const headerLines: string[] = [];
-    if (customHeader) {
-      headerLines.push(customHeader);
-    }
-    for (let i = 0; i < blankLinesCount; i++) {
-      if (i === 0) {
-        headerLines.push(
-          "Student Name: ______________________________     Date: _______________"
-        );
-      } else if (i === 1) {
-        headerLines.push(
-          "Class / Group: ___________________________     Score: ______ / ______"
-        );
-      } else {
-        headerLines.push(
-          "Notes: _________________________________________________________________"
-        );
-      }
-    }
-
-    const pdfBuffer = buildPdfBinary({
-      title: test.title || "English Test",
+    const questions = Array.isArray(test.questionsJson) ? test.questionsJson : [];
+    const bytes = buildAcademicPdfBytes({
+      title: String(test.title || "English Test"),
       subtitle: `Topic: ${test.topic} | Level: ${test.level} | Questions: ${questions.length} | ID: ${test.id}`,
-      headerLines,
-      bgIconStyle,
+      customHeader,
+      blankLines,
+      bgStyle,
       questions,
     });
 
-    const safeFileName = `${(test.title || "english-test")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "") || "test"}.pdf`;
-
-    return new NextResponse(new Uint8Array(pdfBuffer), {
+    return new NextResponse(Buffer.from(bytes), {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${safeFileName}"`,
-        "Cache-Control": "no-store",
+        "Content-Disposition": `attachment; filename="${String(test.title || "test")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")}.pdf"`,
       },
     });
   } catch (error) {
     console.error("GET /api/tests/[id]/pdf error:", error);
-    return NextResponse.json(
-      { error: "PDF yaratishda xatolik yuz berdi." },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "PDF yaratishda xato." }, { status: 500 });
   }
 }
