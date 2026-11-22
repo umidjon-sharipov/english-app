@@ -525,6 +525,8 @@ export default function ProfilePage() {
   const displayFullName = user
     ? [user.firstName, user.lastName].filter(Boolean).join(" ")
     : "Account & Profile";
+  const remaining: StoredAccount[] = [];
+
 
   return (
     <div

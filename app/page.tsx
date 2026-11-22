@@ -454,9 +454,9 @@ export default function HomePage() {
                   title="Open profile & switch accounts"
                   className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors ${secondaryBtn}`}
                 >
-                  {user.avatarUrl ? (
+                  {((user as { avatarUrl?: string | null }).avatarUrl ?? undefined) ? (
                     <img
-                      src={user.avatarUrl}
+                      src={((user as { avatarUrl?: string | null }).avatarUrl ?? undefined)}
                       alt={user.userName}
                       className="h-4 w-4 rounded-full object-cover"
                     />
