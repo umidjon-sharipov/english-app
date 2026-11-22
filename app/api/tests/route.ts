@@ -21,7 +21,6 @@ export async function requireAuthUserId(req: NextRequest): Promise<string | null
   try {
     const cookieStore = await cookies();
     const allCookies = cookieStore.getAll();
-
     const headerToken =
       req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim() ||
       null;
@@ -29,22 +28,12 @@ export async function requireAuthUserId(req: NextRequest): Promise<string | null
     const candidates: string[] = [];
     if (headerToken) candidates.push(headerToken);
 
-    const priorityNames = [
-      "token",
-      "auth_token",
-      "access_token",
-      "session",
-      "jwt",
-      "auth",
-    ];
-    for (const name of priorityNames) {
-      const c = cookieStore.get(name)?.value;
-      if (c && !candidates.includes(c)) candidates.push(c);
+    for (const name of ["token", "auth_token", "access_token", "session", "jwt", "auth"]) {
+      const val = cookieStore.get(name)?.value;
+      if (val && !candidates.includes(val)) candidates.push(val);
     }
     for (const c of allCookies) {
-      if (c.value && !candidates.includes(c.value)) {
-        candidates.push(c.value);
-      }
+      if (c.value && !candidates.includes(c.value)) candidates.push(c.value);
     }
 
     for (const token of candidates) {
@@ -58,21 +47,16 @@ export async function requireAuthUserId(req: NextRequest): Promise<string | null
                 ? (record.user as Record<string, unknown>)
                 : null;
             const rawId =
-              record.userId ??
-              record.id ??
-              record.sub ??
-              nested?.userId ??
-              nested?.id;
+              record.userId ?? record.id ?? record.sub ?? nested?.userId ?? nested?.id;
             if (typeof rawId === "string" && rawId.trim().length > 0) {
               return rawId.trim();
             }
           }
         } catch {
-          // Try next cookie/token
+          // Try next token
         }
       }
 
-      // Fallback: decode JWT payload segment if token is a 3-part JWT
       const parts = token.split(".");
       if (parts.length === 3) {
         try {
@@ -88,47 +72,43 @@ export async function requireAuthUserId(req: NextRequest): Promise<string | null
         }
       }
     }
-
     return null;
   } catch {
     return null;
   }
 }
 
-function buildFallbackQuestions(
+function buildLocalQuestions(
   topic: string,
   level: string,
-  count: number
+  count: number,
+  customPrompt?: string
 ): GeneratedQuestion[] {
+  const focusNote = customPrompt?.trim() ? ` [${customPrompt.trim()}]` : "";
   const templates = [
     {
-      q: `In ${level} English (${topic}), which option best completes the sentence: "She ____ the assignment before the deadline."`,
+      q: `In ${level} English (${topic})${focusNote}, which option best completes: "She ____ the task before the deadline."`,
       opts: ["had completed", "has complete", "was complete", "completing"],
       ans: 0,
-      exp: "Past Perfect ('had completed') shows an action completed before another past point.",
+      exp: "Past Perfect ('had completed') indicates an action completed before a past reference point.",
     },
     {
-      q: `Which word or phrase fits ${topic} at a ${level} level best?`,
+      q: `Which transition fits ${topic} (${level})${focusNote} most naturally in formal writing?`,
       opts: ["Nevertheless", "Although despite", "In spite", "Because of though"],
       ans: 0,
-      exp: "'Nevertheless' is a formal conjunctive adverb used to express contrast.",
+      exp: "'Nevertheless' introduces a contrasting point smoothly.",
     },
     {
-      q: `Choose the most natural ${level} expression for ${topic}: "Could you ____ on what you meant?"`,
+      q: `Select the most accurate ${level} phrase for ${topic}${focusNote}: "Could you ____ on your main point?"`,
       opts: ["elaborate", "make up", "put off", "give out"],
       ans: 0,
-      exp: "'Elaborate on' means to explain or give more details about a point.",
+      exp: "'Elaborate on' means to explain in greater detail.",
     },
     {
-      q: `Identify the grammatically accurate choice for ${level} (${topic}):`,
-      opts: [
-        "Not only did he pass, but he also scored high.",
-        "Not only he passed, but he also scored high.",
-        "Not only did he passed, also he scored high.",
-        "Not only he did pass, but scored high.",
-      ],
+      q: `Choose the grammatically correct sentence for ${level} (${topic})${focusNote}: "Not only ____ on time, but he also led the review."`,
+      opts: ["did he arrive", "he arrived", "did he arrived", "he did arrived"],
       ans: 0,
-      exp: "Negative inversion at the start of a clause requires auxiliary verb before the subject.",
+      exp: "Initial negative adverbials trigger subject-auxiliary inversion.",
     },
   ];
 
@@ -148,10 +128,11 @@ function normalizeQuestions(
   raw: unknown,
   topic: string,
   level: string,
-  count: number
+  count: number,
+  customPrompt?: string
 ): GeneratedQuestion[] {
   if (!Array.isArray(raw) || raw.length === 0) {
-    return buildFallbackQuestions(topic, level, count);
+    return buildLocalQuestions(topic, level, count, customPrompt);
   }
 
   const parsed: GeneratedQuestion[] = [];
@@ -199,7 +180,7 @@ function normalizeQuestions(
   }
 
   if (parsed.length < count) {
-    const fallback = buildFallbackQuestions(topic, level, count);
+    const fallback = buildLocalQuestions(topic, level, count, customPrompt);
     while (parsed.length < count) {
       const nextItem = fallback[parsed.length];
       parsed.push({ ...nextItem, id: parsed.length + 1 });
@@ -212,16 +193,22 @@ function normalizeQuestions(
 async function generateQuestionsWithGemini(
   topic: string,
   level: string,
-  count: number
+  count: number,
+  customPrompt?: string
 ): Promise<GeneratedQuestion[]> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return buildFallbackQuestions(topic, level, count);
+    return buildLocalQuestions(topic, level, count, customPrompt);
   }
+
+  const extraInstructions = customPrompt?.trim()
+    ? `Additional Custom Prompt Instructions: ${customPrompt.trim()}`
+    : "";
 
   const prompt = `Generate exactly ${count} multiple-choice English practice questions.
 Topic: ${topic}
 Difficulty Level: ${level}
+${extraInstructions}
 
 Return ONLY a valid JSON array (no markdown fences, no extra text) where each element has this exact shape:
 {
@@ -258,7 +245,7 @@ Rules:
     );
 
     if (!res.ok) {
-      return buildFallbackQuestions(topic, level, count);
+      return buildLocalQuestions(topic, level, count, customPrompt);
     }
 
     const data = (await res.json()) as {
@@ -276,9 +263,9 @@ Rules:
       .trim();
 
     const jsonParsed: unknown = JSON.parse(cleaned);
-    return normalizeQuestions(jsonParsed, topic, level, count);
+    return normalizeQuestions(jsonParsed, topic, level, count, customPrompt);
   } catch {
-    return buildFallbackQuestions(topic, level, count);
+    return buildLocalQuestions(topic, level, count, customPrompt);
   } finally {
     clearTimeout(timeout);
   }
@@ -294,23 +281,13 @@ export async function GET(req: NextRequest) {
       orderBy: { createdAt: "desc" },
       include: {
         creator: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            userName: true,
-          },
+          select: { id: true, firstName: true, lastName: true, userName: true },
         },
         participants: {
           orderBy: { joinedAt: "desc" },
           include: {
             user: {
-              select: {
-                id: true,
-                firstName: true,
-                lastName: true,
-                userName: true,
-              },
+              select: { id: true, firstName: true, lastName: true, userName: true },
             },
           },
         },
@@ -348,10 +325,17 @@ export async function POST(req: NextRequest) {
       endsAt?: unknown;
       designTheme?: unknown;
       mergeTestIds?: unknown;
+      useAi?: unknown;
+      customPrompt?: unknown;
     };
 
     const status: "OPEN" | "CLOSED" =
       body.status === "CLOSED" ? "CLOSED" : "OPEN";
+
+    // Default AI is OFF (false) unless explicitly enabled
+    const useAi = body.useAi === true;
+    const customPrompt =
+      typeof body.customPrompt === "string" ? body.customPrompt.trim() : "";
 
     let maxParticipants: number | null = null;
     if (
@@ -413,10 +397,7 @@ export async function POST(req: NextRequest) {
         if (st.level) levelsSet.add(st.level);
         if (Array.isArray(st.questionsJson)) {
           for (const q of st.questionsJson as GeneratedQuestion[]) {
-            mergedList.push({
-              ...q,
-              id: mergedList.length + 1,
-            });
+            mergedList.push({ ...q, id: mergedList.length + 1 });
           }
         }
       }
@@ -439,7 +420,10 @@ export async function POST(req: NextRequest) {
       const questionCount = Number.isFinite(rawCount)
         ? Math.min(100, Math.max(5, Math.round(rawCount)))
         : 10;
-      questions = await generateQuestionsWithGemini(topic, level, questionCount);
+
+      questions = useAi
+        ? await generateQuestionsWithGemini(topic, level, questionCount, customPrompt)
+        : buildLocalQuestions(topic, level, questionCount, customPrompt);
     }
 
     const finalCount = questions.length;
@@ -450,23 +434,13 @@ export async function POST(req: NextRequest) {
 
     const testInclude = {
       creator: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          userName: true,
-        },
+        select: { id: true, firstName: true, lastName: true, userName: true },
       },
       participants: {
         orderBy: { joinedAt: "desc" as const },
         include: {
           user: {
-            select: {
-              id: true,
-              firstName: true,
-              lastName: true,
-              userName: true,
-            },
+            select: { id: true, firstName: true, lastName: true, userName: true },
           },
         },
       },
@@ -513,7 +487,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({ test: created, questions }, { status: 201 });
+    return NextResponse.json({ test: created, questions, usedAi: useAi }, { status: 201 });
   } catch (error) {
     console.error("POST /api/tests error:", error);
     return NextResponse.json(

@@ -56,6 +56,8 @@ export default function TestsHubPage() {
     const [topic, setTopic] = useState(TOPICS[0]);
     const [level, setLevel] = useState("B1");
     const [questionCount, setQuestionCount] = useState<number>(10);
+    const [useAi, setUseAi] = useState<boolean>(false); // default OFF
+    const [customPrompt, setCustomPrompt] = useState<string>("");
     const [status, setStatus] = useState<"OPEN" | "CLOSED">("OPEN");
     const [maxParticipants, setMaxParticipants] = useState<string>("");
     const [startsAt, setStartsAt] = useState<string>("");
@@ -121,6 +123,8 @@ export default function TestsHubPage() {
                     topic,
                     level,
                     questionCount,
+                    useAi,
+                    customPrompt: customPrompt.trim() || undefined,
                     status,
                     maxParticipants:
                         parsedLimit && Number.isFinite(parsedLimit) && parsedLimit > 0
@@ -140,11 +144,12 @@ export default function TestsHubPage() {
             }
 
             setTitle("");
+            setCustomPrompt("");
             setMergeSelectedIds([]);
             setMessage(
                 data.test.status === "CLOSED"
                     ? `Yopiq (CLOSED) test yaratildi! ID: ${data.test.id} (/tests/${data.test.id} orqali kiring)`
-                    : `"${data.test.title}" yaratildi va bazaga saqlandi.`
+                    : `"${data.test.title}" yaratildi (AI: ${useAi ? "ON" : "OFF"}).`
             );
             await loadTests();
         } catch {
@@ -209,7 +214,7 @@ export default function TestsHubPage() {
                 >
                     <div>
                         <h1 className="text-2xl md:text-3xl font-semibold tracking-tight">
-                            AI Test Studio · Open &amp; ID Access
+                            Test Studio · Open &amp; ID Access
                         </h1>
                         <p
                             className={ `text-sm mt-1 ${isLight ? "text-stone-600" : "text-neutral-400"
@@ -248,6 +253,7 @@ export default function TestsHubPage() {
                     </div>
                 </div>
 
+                {/* Direct Test ID Access */ }
                 <div
                     className={ `rounded-xl border p-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 ${isLight
                         ? "bg-white border-stone-300"
@@ -259,7 +265,7 @@ export default function TestsHubPage() {
                             Test ID orqali kirish (Yopiq / Private testlar uchun)
                         </p>
                         <p className={ isLight ? "text-stone-600" : "text-neutral-400" }>
-                            Yopiq testlar ro&apos;yxatda chiqmaydi — ID ni kiriting yoki /tests/[id] ga o&apos;ting.
+                            Yopiq testlar ro&apos;yxatda chiqmaydi — ID ni kiriting va /tests/[id] ga o&apos;ting.
                         </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -312,11 +318,26 @@ export default function TestsHubPage() {
                             : "bg-neutral-900/70 border-neutral-800"
                             }` }
                     >
-                        <h2 className="text-lg font-medium">
-                            { mergeSelectedIds.length >= 2
-                                ? `Testlarni Birlashma Qilish (${mergeSelectedIds.length} ta tanlandi)`
-                                : "Yangi AI Test Generatsiya" }
-                        </h2>
+                        <div className="flex items-center justify-between gap-2">
+                            <h2 className="text-lg font-medium">
+                                { mergeSelectedIds.length >= 2
+                                    ? `Testlarni Birlashma Qilish (${mergeSelectedIds.length} ta)`
+                                    : "Yangi Test Yaratish" }
+                            </h2>
+
+                            <button
+                                type="button"
+                                onClick={ () => setUseAi((v) => !v) }
+                                className={ `px-3 py-1 rounded-full text-xs font-medium border cursor-pointer ${useAi
+                                    ? "bg-emerald-500 text-neutral-950 border-emerald-400"
+                                    : isLight
+                                        ? "bg-stone-100 text-stone-700 border-stone-300"
+                                        : "bg-neutral-950 text-neutral-400 border-neutral-700"
+                                    }` }
+                            >
+                                AI: { useAi ? "ON" : "OFF" }
+                            </button>
+                        </div>
 
                         <div>
                             <label className="block text-xs opacity-75 mb-1">Test nomi</label>
@@ -385,6 +406,22 @@ export default function TestsHubPage() {
                             />
                         </div>
 
+                        <div>
+                            <label className="block text-xs opacity-75 mb-1">
+                                Qo&apos;shimcha Prompt (mavzu va darajadan tashqari)
+                            </label>
+                            <textarea
+                                rows={ 2 }
+                                value={ customPrompt }
+                                onChange={ (e) => setCustomPrompt(e.target.value) }
+                                placeholder="Masalan: Focus on conditionals, phrasal verbs, and academic gap-fill questions..."
+                                className={ `w-full rounded-lg border px-3 py-2 text-xs ${isLight
+                                    ? "bg-stone-50 border-stone-300 text-stone-900"
+                                    : "bg-neutral-950 border-neutral-800 text-white"
+                                    }` }
+                            />
+                        </div>
+
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                             <div>
                                 <label className="block text-xs opacity-75 mb-1">Status</label>
@@ -423,9 +460,7 @@ export default function TestsHubPage() {
                                 <select
                                     value={ designTheme }
                                     onChange={ (e) =>
-                                        setDesignTheme(
-                                            e.target.value as "minimal" | "card" | "paper"
-                                        )
+                                        setDesignTheme(e.target.value as "minimal" | "card" | "paper")
                                     }
                                     className={ `w-full rounded-lg border px-3 py-2 text-sm ${isLight
                                         ? "bg-stone-50 border-stone-300 text-stone-900"
@@ -510,10 +545,13 @@ export default function TestsHubPage() {
                                 ? "Bajarilmoqda..."
                                 : mergeSelectedIds.length >= 2
                                     ? "Tanlangan Testlarni Bitta Testga Birlashtirish"
-                                    : "AI Test Generatsiya Qilish" }
+                                    : useAi
+                                        ? "AI Orqali Test Yaratish (AI: ON)"
+                                        : "Test Yaratish (AI: OFF)" }
                         </button>
                     </form>
 
+                    {/* OPEN Tests List */ }
                     <div
                         className={ `lg:col-span-6 rounded-xl border p-5 space-y-4 ${isLight
                             ? "bg-white border-stone-300"
@@ -540,7 +578,7 @@ export default function TestsHubPage() {
                                 Hozircha OPEN test yo&apos;q. Yangi OPEN test yarating yoki ID orqali /tests/[id] ga kiring.
                             </p>
                         ) : (
-                            <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
+                            <div className="space-y-3 max-h-[540px] overflow-y-auto pr-1">
                                 { openTests.map((t) => {
                                     const pCount = t.participants?.length ?? 0;
                                     const limitStr =
@@ -573,18 +611,6 @@ export default function TestsHubPage() {
                                                     <p className="text-[11px] opacity-60 mt-0.5">
                                                         ID: <code className="select-all">{ t.id }</code>
                                                     </p>
-                                                    { (t.startsAt || t.endsAt) && (
-                                                        <p className="text-[11px] text-amber-400 mt-0.5">
-                                                            Vaqt:{ " " }
-                                                            { t.startsAt
-                                                                ? new Date(t.startsAt).toLocaleString()
-                                                                : "Darhol" }{ " " }
-                                                            —{ " " }
-                                                            { t.endsAt
-                                                                ? new Date(t.endsAt).toLocaleString()
-                                                                : "Cheklovsiz" }
-                                                        </p>
-                                                    ) }
                                                 </div>
 
                                                 <div className="flex flex-wrap items-center gap-2">

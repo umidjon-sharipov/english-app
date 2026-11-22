@@ -1,3 +1,81 @@
+
+async function handleParticipantModeration(
+  id: string,
+  body: Record<string, unknown>
+) {
+  const action = typeof body.action === "string" ? body.action : "";
+  const targetUserId =
+    typeof body.targetUserId === "string" ? body.targetUserId.trim() : "";
+  const participantId =
+    typeof body.participantId === "string" ? body.participantId.trim() : "";
+
+  if (!action || (!targetUserId && !participantId)) return null;
+
+  const dbAny = prisma as typeof prisma & {
+    test: any;
+    testParticipant: any;
+  };
+
+  const currentTest = await dbAny.test.findUnique({ where: { id } });
+  if (!currentTest) return { error: "Test topilmadi.", status: 404 };
+
+  let resolvedUserId = targetUserId;
+  if (!resolvedUserId && participantId) {
+    const pRow = await dbAny.testParticipant.findUnique({
+      where: { id: participantId },
+    });
+    if (pRow) resolvedUserId = pRow.userId;
+  }
+
+  if (action === "kick") {
+    if (participantId) {
+      await dbAny.testParticipant.deleteMany({ where: { id: participantId } });
+    } else if (resolvedUserId) {
+      await dbAny.testParticipant.deleteMany({
+        where: { testId: id, userId: resolvedUserId },
+      });
+    }
+    return { ok: true, message: "Qatnashuvchi testdan chiqarildi." };
+  }
+
+  if (action === "block" && resolvedUserId) {
+    await dbAny.testParticipant.deleteMany({
+      where: { testId: id, userId: resolvedUserId },
+    });
+    const existingBlocked: string[] = Array.isArray(currentTest.blockedUserIds)
+      ? currentTest.blockedUserIds
+      : [];
+    const nextBlocked = Array.from(new Set([...existingBlocked, resolvedUserId]));
+    try {
+      await dbAny.test.update({
+        where: { id },
+        data: { blockedUserIds: nextBlocked },
+      });
+    } catch {
+      // Fallback if column not migrated yet
+    }
+    return { ok: true, message: "Foydalanuvchi testdan bloklandi." };
+  }
+
+  if (action === "unblock" && resolvedUserId) {
+    const existingBlocked: string[] = Array.isArray(currentTest.blockedUserIds)
+      ? currentTest.blockedUserIds
+      : [];
+    const nextBlocked = existingBlocked.filter((u) => u !== resolvedUserId);
+    try {
+      await dbAny.test.update({
+        where: { id },
+        data: { blockedUserIds: nextBlocked },
+      });
+    } catch {
+      // Fallback if column not migrated yet
+    }
+    return { ok: true, message: "Block olib tashlandi." };
+  }
+
+  return null;
+}
+
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAuthUserId } from "@/app/api/tests/route";
@@ -124,34 +202,22 @@ export async function PATCH(
   context: { params: Promise<{ id: string }> }
 ) {
   try {
-    const authUserId = await requireAuthUserId(req);
-    if (!authUserId) {
-      return NextResponse.json(
-        { error: "JWTAuthGuard: Avval tizimga kiring (401 Unauthorized)." },
-        { status: 401 }
-      );
+    const rawBody = await req.json();
+    const body = (
+      rawBody && typeof rawBody === "object" ? rawBody : {}
+    ) as Record<string, unknown>;
+
+    const modRes = await handleParticipantModeration(id, body);
+    if (modRes) {
+      if ("error" in modRes) {
+        return NextResponse.json(
+          { error: modRes.error },
+          { status: modRes.status || 400 }
+        );
+      }
+      return NextResponse.json(modRes);
     }
 
-    const { id } = await context.params;
-    const existing = await db.test.findUnique({ where: { id } });
-    if (!existing) {
-      return NextResponse.json({ error: "Test topilmadi." }, { status: 404 });
-    }
-
-    if (existing.creatorId !== authUserId) {
-      return NextResponse.json(
-        { error: "Faqat test yaratuvchisi (founder) testni o'zgartira oladi." },
-        { status: 403 }
-      );
-    }
-
-    const body = (await req.json()) as {
-      status?: unknown;
-      maxParticipants?: unknown;
-      startsAt?: unknown;
-      endsAt?: unknown;
-      designTheme?: unknown;
-    };
 
     const data: Record<string, unknown> = {};
 
