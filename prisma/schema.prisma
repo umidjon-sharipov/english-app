@@ -26,6 +26,8 @@ model User {
     @@map("Users")
   createdReadingSets      ReadingSet[]         @relation("CreatedReadingSets")
   participatedReadingSets ReadingParticipant[] @relation("ParticipatedReadingSets")
+  createdGameSets         GameSet[]         @relation("CreatedGameSets")
+  participatedGameSets    GameParticipant[] @relation("ParticipatedGameSets")
 }
 
 enum TestStatus {
@@ -109,5 +111,42 @@ model ReadingParticipant {
 
   @@unique([readingId, userId])
   @@index([readingId])
+  @@index([userId])
+}
+model GameSet {
+  id                 String            @id @default(cuid())
+  title              String
+  gameType           String
+  topic              String
+  level              String            @default("B1")
+  questionCount      Int               @default(10)
+  status             TestStatus        @default(OPEN)
+  allowParticipantAi Boolean           @default(false)
+  blockedUserIds     String[]          @default([])
+  questionsJson      Json
+  creatorId          String            @db.Uuid
+  creator            User              @relation("CreatedGameSets", fields: [creatorId], references: [id], onDelete: Cascade)
+  participants       GameParticipant[]
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@index([creatorId])
+  @@index([status])
+}
+
+model GameParticipant {
+  id          String    @id @default(cuid())
+  gameId      String
+  game        GameSet   @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  userId      String    @db.Uuid
+  user        User      @relation("ParticipatedGameSets", fields: [userId], references: [id], onDelete: Cascade)
+  score       Int?
+  total       Int?
+  streak      Int?
+  completedAt DateTime?
+  joinedAt    DateTime  @default(now())
+
+  @@unique([gameId, userId])
+  @@index([gameId])
   @@index([userId])
 }
