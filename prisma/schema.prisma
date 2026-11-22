@@ -24,6 +24,8 @@ model User {
     participatedTests TestParticipant[] @relation("ParticipatedTests")
 
     @@map("Users")
+  createdReadingSets      ReadingSet[]         @relation("CreatedReadingSets")
+  participatedReadingSets ReadingParticipant[] @relation("ParticipatedReadingSets")
 }
 
 enum TestStatus {
@@ -69,4 +71,43 @@ model TestParticipant {
     @@unique([testId, userId])
     @@index([testId])
     @@index([userId])
+}
+model ReadingSet {
+  id                 String               @id @default(cuid())
+  title              String
+  topic              String
+  level              String               @default("B1")
+  length             String               @default("medium")
+  passageCount       Int                  @default(1)
+  questionsPerPassage Int                 @default(5)
+  status             TestStatus           @default(OPEN)
+  allowParticipantAi Boolean              @default(false)
+  blockedUserIds     String[]             @default([])
+  passagesJson       Json
+  creatorId          String               @db.Uuid
+  creator            User                 @relation("CreatedReadingSets", fields: [creatorId], references: [id], onDelete: Cascade)
+  participants       ReadingParticipant[]
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  @@index([creatorId])
+  @@index([status])
+  questionType       String               @default("test")
+}
+
+model ReadingParticipant {
+  id          String    @id @default(cuid())
+  readingId   String
+  reading     ReadingSet @relation(fields: [readingId], references: [id], onDelete: Cascade)
+  userId      String    @db.Uuid
+  user        User      @relation("ParticipatedReadingSets", fields: [userId], references: [id], onDelete: Cascade)
+  score       Int?
+  total       Int?
+  feedbackJson Json?
+  completedAt DateTime?
+  joinedAt    DateTime  @default(now())
+
+  @@unique([readingId, userId])
+  @@index([readingId])
+  @@index([userId])
 }
